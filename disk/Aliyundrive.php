@@ -93,9 +93,10 @@ class Aliyundrive {
         if (!($files = getcache('path_' . $path, $this->disktag))) {
             if ($path == '/' || $path == '') {
                 $files = $this->fileList('root');
-                //error_log1('root_id' . $files['id']);
+                //error_log1('root_id' . $files['file_id']);
                 $files['file_id'] = 'root';
                 $files['type'] = 'folder';
+                //error_log1(json_encode($files, JSON_PRETTY_PRINT));
             } else {
                 $tmp = splitlast($path, '/');
                 $parent_path = $tmp[0];
@@ -194,8 +195,8 @@ class Aliyundrive {
         $data['image_url_process'] = 'image/resize,w_1920/format,jpeg';
         $data['video_thumbnail_process'] = 'video/snapshot,t_0,f_jpg,w_300';
         $data['fields'] = '*';
-        $data['order_by'] = 'updated_at';
-        $data['order_direction'] = 'DESC';
+        $data['order_by'] = 'name'; //updated_at
+        $data['order_direction'] = 'ASC'; //DESC
 
         $res = curl('POST', $url, json_encode($data), $header);
         //error_log1($res['stat'] . $res['body']);
@@ -320,6 +321,7 @@ class Aliyundrive {
         return output(json_encode($this->files_format(json_decode($result['body'], true))), $result['stat']);
     }
     public function Copy($file) {
+        return output('NO copy', 415);
         if (!$file['id']) {
             $oldfile = $this->list_path($file['path'] . '/' . $file['name']);
             //error_log1('res:' . json_encode($res));
@@ -489,6 +491,31 @@ class Aliyundrive {
 
         return curl('POST', $url, json_encode($data), $header);
     }
+    protected function fileCreate1($parentId, $fileName, $sha1, $proof_code, $size, $part_number) {
+        //$url = $this->api_url . '/file/create';
+        $url = 'https://api.aliyundrive.com/adrive/v2/file/createWithFolders';
+
+        $header["content-type"] = "application/json; charset=utf-8";
+        $header['authorization'] = 'Bearer ' . $this->access_token;
+    
+        $data['check_name_mode'] = 'refuse'; // ignore, auto_rename, refuse.
+        $data['content_hash'] = $sha1;
+        $data['content_hash_name'] = 'sha1';
+        //$data['content_type'] = '';
+        $data['drive_id'] = $this->driveId;
+        //$data['ignoreError'] = false;
+        $data['name'] = $fileName;
+        $data['parent_file_id'] = $parentId;
+        for ($i=0;$i<$part_number;$i++) {
+            $data['part_info_list'][$i]['part_number'] = $i+1;
+        }
+        $data['proof_code'] = $proof_code;
+        $data['proof_version'] = 'v1';
+        $data['size'] = (int)$size;
+        $data['type'] = 'file';
+
+        return curl('POST', $url, json_encode($data), $header);
+    }
     protected function tmpfileCreate($parentId, $tmpFilePath, $tofileName = '') {
         $sha1 = sha1_file($tmpFilePath);
         if ($tofileName == '') $tofileName = splitlast($tmpFilePath, '/')[1];
@@ -544,6 +571,21 @@ class Aliyundrive {
             $result = $this->fileComplete($_POST['fileid'], $_POST['uploadid'], json_decode($_POST['etag'], true));
             return output(json_encode($this->files_format(json_decode($result['body'], true))), $result['stat']);
         } else {
+            if (isset($_POST['CalcProof'])) {
+                return output(substr(md5($this->access_token), 0, 16), 200);
+                // Calc proof code
+                /*if (!function_exists('bcadd')) {
+                    // no php-bcmath
+                    return output(0, 200);
+                } else {
+                    $r = bchexdec( substr(md5($this->access_token), 0, 16) );
+                    $i = $_POST['filesize'];
+                    //$o = $i ? bcmod($r, $i) : 0;
+                    $o = bcmod($r, $i);
+                    //return output(hexdec( substr(md5($this->access_token), 0, 16) ) . ' , ' . $r . ' / ' . $i . ' = ' . $o, 200);
+                    return output($o, 200);
+                }*/
+            }
             if ($_POST['upbigfilename']=='') return output('error: no file name', 400);
             if (!is_numeric($_POST['filesize'])) return output('error: no file size', 400);
             if (!isset($_POST['filesha1'])) return output('error: no file sha1', 400);
@@ -573,7 +615,11 @@ class Aliyundrive {
                 //error_log1($res['body']);
                 $parent_file_id = json_decode($res['body'], true)['file_id'];
             }
-            $response = $this->fileCreate($parent_file_id, $filename, $_POST['filesha1'], $fileinfo['size'], ceil($fileinfo['size']/$_POST['chunksize']));
+            //if (!function_exists('bcadd')) {
+            //    $response = $this->fileCreate($parent_file_id, $filename, $_POST['filesha1'], $fileinfo['size'], ceil($fileinfo['size']/$_POST['chunksize']));
+            //} else {
+                $response = $this->fileCreate1($parent_file_id, $filename, $_POST['filesha1'], $_POST['proof_code'], $fileinfo['size'], ceil($fileinfo['size']/$_POST['chunksize']));
+            //}
             $res = json_decode($response['body'], true);
             if (isset($res['exist'])) {
                 // 已经有
@@ -631,7 +677,7 @@ class Aliyundrive {
             } else {
                 $str .= '
 <script>
-    var status = "' . $response['status'] . '";
+    var status = "' . $response['DplStatus'] . '";
     var uploadList = setInterval(function(){
         if (document.getElementById("dis").style.display=="none") {
             console.log(min++);
@@ -702,7 +748,7 @@ class Aliyundrive {
     </form>
 </div>
 <script>
-    var status = "' . $response['status'] . '";
+    var status = "' . $response['DplStatus'] . '";
     function notnull(t)
     {
         if (t.driveId.value==\'\') {
@@ -768,7 +814,7 @@ class Aliyundrive {
             }
             return true;
         }
-        var status = "' . $response['status'] . '";
+        var status = "' . $response['DplStatus'] . '";
     </script>
     ';
                 return message($html, $title, 201, 1);
@@ -799,7 +845,7 @@ class Aliyundrive {
                 alert("Do not input ' . $envs . '");
                 return false;
             }
-            var reg = /^[a-zA-Z]([_a-zA-Z0-9]{1,20})$/;
+            var reg = /^[a-zA-Z]([_a-zA-Z0-9]{1,})$/;
             if (!reg.test(t.disktag_add.value)) {
                 alert(\'' . getconstStr('TagFormatAlert') . '\');
                 return false;
