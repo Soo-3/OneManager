@@ -1,4 +1,7 @@
 <?php
+// https://cloud.tencent.com/document/product/583/33846
+// https://cloud.tencent.com/document/product/583/18581
+// https://cloud.tencent.com/document/product/583/18580
 
 function printInput($event, $context)
 {
@@ -41,8 +44,6 @@ function GetPathSetting($event, $context)
         $_SERVER['base_path'] = $event['requestContext']['path'];
         $path = substr($event['path'], strlen($event['requestContext']['path']));
     }
-    if (substr($path,-1)=='/') $path=substr($path,0,-1);
-    $_SERVER['is_guestup_path'] = is_guestup_path($path);
     //$_SERVER['PHP_SELF'] = path_format($_SERVER['base_path'] . $path);
     $_SERVER['REMOTE_ADDR'] = $event['requestContext']['sourceIp'];
     $_SERVER['HTTP_X_REQUESTED_WITH'] = $event['headers']['x-requested-with'];
@@ -56,7 +57,9 @@ function GetPathSetting($event, $context)
     //$_SERVER['REQUEST_SCHEME'] = $event['headers']['x-forwarded-proto'];
     $_SERVER['host'] = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'];
     $_SERVER['referhost'] = explode('/', $event['headers']['referer'])[2];
-    $_SERVER['HTTP_TRANSLATE']==$event['headers']['translate'];//'f'
+    $_SERVER['HTTP_TRANSLATE'] = $event['headers']['translate'];//'f'
+    $_SERVER['HTTP_IF_MODIFIED_SINCE'] = $event['headers']['if-modified-since'];
+    $_SERVER['REQUEST_METHOD'] = $event['httpMethod'];
     $_SERVER['USER'] = 'qcloud';
     return $path;
 }
@@ -167,16 +170,24 @@ function install()
             var expires = "expires="+expd.toGMTString();
             document.cookie=\'language=; path=/; \'+expires;
         </script>
-        <meta http-equiv="refresh" content="3;URL=' . $url . '">', 'Program updating', 201);
+        <meta http-equiv="refresh" content="3;URL=' . $url . '">', 'Program updating', 201, 1);
         }
-        return output('Jump
+        return message(getconstStr('Success') . '
     <script>
         var expd = new Date();
         expd.setTime(expd.getTime()+(2*60*60*1000));
         var expires = "expires="+expd.toGMTString();
         document.cookie=\'language=; path=/; \'+expires;
-    </script>
-    <meta http-equiv="refresh" content="3;URL=' . path_format($_SERVER['base_path'] . '/') . '">', 302);
+        var i = 0;
+        var uploadList = setInterval(function(){
+            if (document.getElementById("dis").style.display=="none") {
+                console.log(i++);
+            } else {
+                clearInterval(uploadList);
+                location.href = "' . path_format($_SERVER['base_path'] . '/') . '";
+            }
+        }, 1000);
+    </script>', 201, 1);
     }
     if ($_GET['install1']) {
         $tmp['timezone'] = $_COOKIE['timezone'];
@@ -200,7 +211,7 @@ function install()
             if ($tmp['ONEMANAGER_CONFIG_SAVE'] == 'file') {
                 $html = getconstStr('ONEMANAGER_CONFIG_SAVE_FILE') . '<br><a href="' . $_SERVER['base_path'] . '">' . getconstStr('Home') . '</a>';
                 $title = 'Reinstall';
-                return message($html, $title, 201);
+                return message($html, $title, 201, 1);
             }
             $html .= '
     <form action="?install2" method="post" onsubmit="return notnull(this);">
@@ -218,7 +229,7 @@ function install()
         }
     </script>';
             $title = getconstStr('SetAdminPassword');
-            return message($html, $title, 201);
+            return message($html, $title, 201, 1);
         }
     }
     if ($_GET['install0']) {
@@ -229,10 +240,11 @@ language:<br>';
             $html .= '
         <label><input type="radio" name="language" value="'.$key1.'" '.($key1==$constStr['language']?'checked':'').' onclick="changelanguage(\''.$key1.'\')">'.$value1.'</label><br>';
         }
-        if (getConfig('SecretId')==''||getConfig('SecretKey')=='') $html .= '
+        //if (getConfig('SecretId')==''||getConfig('SecretKey')=='') 
+        $html .= '
         <a href="https://console.cloud.tencent.com/cam/capi" target="_blank">' . getconstStr('Create') . ' SecretId & SecretKey</a><br>
         <label>SecretId:<input name="SecretId" type="text" placeholder="" size=""></label><br>
-        <label>SecretKey:<input name="SecretKey" type="text" placeholder="" size=""></label><br>';
+        <label>SecretKey:<input name="SecretKey" type="password" placeholder="" size=""></label><br>';
         $html .= '
         <label><input type="radio" name="ONEMANAGER_CONFIG_SAVE" value="" ' . ('file'==getenv('ONEMANAGER_CONFIG_SAVE')?'':'checked') . '>' . getconstStr('ONEMANAGER_CONFIG_SAVE_ENV') . '</label><br>
         <label><input type="radio" name="ONEMANAGER_CONFIG_SAVE" value="file" ' . ('file'==getenv('ONEMANAGER_CONFIG_SAVE')?'checked':'') . '>' . getconstStr('ONEMANAGER_CONFIG_SAVE_FILE') . '</label><br>';
@@ -256,7 +268,8 @@ language:<br>';
         }
         function notnull(t)
         {';
-        if (getConfig('SecretId')==''||getConfig('SecretKey')=='') $html .= '
+        //if (getConfig('SecretId')==''||getConfig('SecretKey')=='') 
+        $html .= '
             if (t.SecretId.value==\'\') {
                 alert(\'input SecretId\');
                 return false;
@@ -371,9 +384,6 @@ function SetbaseConfig($Envs, $function_name, $Region, $Namespace, $SecretId, $S
 {
     //echo json_encode($Envs,JSON_PRETTY_PRINT);
     if ($Envs['ONEMANAGER_CONFIG_SAVE'] == 'file') $Envs = Array( 'ONEMANAGER_CONFIG_SAVE' => 'file' );
-    /*$trynum = 0;
-    while( json_decode(getfunctioninfo($_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], $SecretId, $SecretKey),true)['Response']['Status']!='Active' ) echo '
-'.++$trynum;*/
     //json_decode($a,true)['Response']['Environment']['Variables'][0]['Key']
     $tmp = json_decode(getfunctioninfo($function_name, $Region, $Namespace, $SecretId, $SecretKey),true)['Response']['Environment']['Variables'];
     foreach ($tmp as $tmp1) {
@@ -413,7 +423,7 @@ function SetbaseConfig($Envs, $function_name, $Region, $Namespace, $SecretId, $S
     return post2url('https://'.$host, $data.'&Signature='.urlencode($signStr));
 }
 
-function updateProgram($function_name, $Region, $Namespace, $SecretId, $SecretKey, $source)
+function updateProgram_OLD($function_name, $Region, $Namespace, $SecretId, $SecretKey, $source)
 {
     WaitSCFStat();
     $meth = 'POST';
@@ -452,14 +462,207 @@ namespace:' . $_SERVER['namespace'] . '<br>
 <button onclick="location.href = location.href;">'.getconstStr('Refresh').'</button>';
 }
 
-function OnekeyUpate($auth = 'qkqpttgf', $project = 'OneManager-php', $branch = 'master')
-{
-    $source['url'] = 'https://github.com/' . $auth . '/' . $project;
-    $source['branch'] = $branch;
-    return updateProgram($_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], getConfig('SecretId'), getConfig('SecretKey'), $source);
-}
-
 function setConfigResponse($response)
 {
     return json_decode( $response, true )['Response'];
+}
+
+function WaitFunction() {
+    //$trynum = 0;
+    //while( json_decode(getfunctioninfo($_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], getConfig('SecretId'), getConfig('SecretKey')),true)['Response']['Status']!='Active' ) echo '
+//'.++$trynum;
+    if ( json_decode(getfunctioninfo($_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], getConfig('SecretId'), getConfig('SecretKey')),true)['Response']['Status']=='Active' ) return true;
+    else return false;
+}
+
+function updateProgram($function_name, $Region, $Namespace, $SecretId, $SecretKey, $source)
+{
+    $secretId = $SecretId;
+    $secretKey = $SecretKey;
+    $host = 'scf.tencentcloudapi.com';
+    $service = "scf";
+    $version = "2018-04-16";
+    $action = "UpdateFunctionCode";
+    $region = $Region;
+    $timestamp = time();
+    $algorithm = "TC3-HMAC-SHA256";
+
+    // step 1: build canonical request string
+    $httpRequestMethod = "POST";
+    $canonicalUri = "/";
+    $canonicalQueryString = "";
+    $canonicalHeaders = "content-type:application/json; charset=utf-8\n"."host:".$host."\n";
+    $signedHeaders = "content-type;host";
+
+    //$tmpdata['Action'] = 'UpdateFunctionCode';
+    $tmpdata['Code']['ZipFile'] = base64_encode( file_get_contents($source) );
+    $tmpdata['CodeSource'] = 'ZipFile';
+    $tmpdata['FunctionName'] = $function_name;
+    $tmpdata['Handler'] = 'index.main_handler';
+    //$tmpdata['Namespace'] = $Namespace;
+    //$tmpdata['Nonce'] = time();
+    //$tmpdata['Region'] = $Region;
+    //$tmpdata['SecretId'] = $SecretId;
+    //$tmpdata['Timestamp'] = time();
+    //$tmpdata['Token'] = '';
+    //$tmpdata['Version'] = '2018-04-16';
+    $payload = json_encode($tmpdata);
+    //$payload = '{"Limit": 1, "Filters": [{"Values": ["\u672a\u547d\u540d"], "Name": "instance-name"}]}';
+    $hashedRequestPayload = hash("SHA256", $payload);
+    $canonicalRequest = $httpRequestMethod."\n"
+        .$canonicalUri."\n"
+        .$canonicalQueryString."\n"
+        .$canonicalHeaders."\n"
+        .$signedHeaders."\n"
+        .$hashedRequestPayload;
+    //echo $canonicalRequest.PHP_EOL;
+
+    // step 2: build string to sign
+    $date = gmdate("Y-m-d", $timestamp);
+    $credentialScope = $date."/".$service."/tc3_request";
+    $hashedCanonicalRequest = hash("SHA256", $canonicalRequest);
+    $stringToSign = $algorithm."\n"
+        .$timestamp."\n"
+        .$credentialScope."\n"
+        .$hashedCanonicalRequest;
+    //echo $stringToSign.PHP_EOL;
+
+    // step 3: sign string
+    $secretDate = hash_hmac("SHA256", $date, "TC3".$secretKey, true);
+    $secretService = hash_hmac("SHA256", $service, $secretDate, true);
+    $secretSigning = hash_hmac("SHA256", "tc3_request", $secretService, true);
+    $signature = hash_hmac("SHA256", $stringToSign, $secretSigning);
+    //echo $signature.PHP_EOL;
+
+    // step 4: build authorization
+    $authorization = $algorithm
+        ." Credential=".$secretId."/".$credentialScope
+        .", SignedHeaders=content-type;host, Signature=".$signature;
+    //echo $authorization.PHP_EOL;
+
+    //$curl = "curl -X POST https://".$host
+    //    .' -H "Authorization: '.$authorization.'"'
+    //    .' -H "Content-Type: application/json; charset=utf-8"'
+    //    .' -H "Host: '.$host.'"'
+    //    .' -H "X-TC-Action: '.$action.'"'
+    //    .' -H "X-TC-Timestamp: '.$timestamp.'"'
+    //    .' -H "X-TC-Version: '.$version.'"'
+    //    .' -H "X-TC-Region: '.$region.'"'
+    //    ." -d '".$payload."'";
+    //error_log1( $curl.PHP_EOL );
+    //return '{"response": {"Error": {"Message":"' . $curl . '"}}}';
+    $headers['Authorization'] = $authorization;
+    $headers['Content-Type'] = 'application/json; charset=utf-8';
+    $headers['Host'] = $host;
+    $headers['X-TC-Action'] = $action;
+    $headers['X-TC-Timestamp'] = $timestamp;
+    $headers['X-TC-Version'] = $version;
+    $headers['X-TC-Region'] = $region;
+    return curl('POST', 'https://'.$host, $payload, $headers)['body'];
+}
+
+function OnekeyUpate($GitSource = 'Github', $auth = 'qkqpttgf', $project = 'OneManager-php', $branch = 'master')
+{
+    $source = '/tmp/code.zip';
+    $outPath = '/tmp/';
+
+    if ($GitSource=='Github') {
+        // 从github下载对应tar.gz，并解压
+        $url = 'https://github.com/' . $auth . '/' . $project . '/tarball/' . urlencode($branch) . '/';
+    } elseif ($GitSource=='HITGitlab') {
+        $url = 'https://git.hit.edu.cn/' . $auth . '/' . $project . '/-/archive/' . urlencode($branch) . '/' . $project . '-' . urlencode($branch) . '.tar.gz';
+    } else return json_encode(['Response'=>['Error'=>['code'=>'Git Source input Error!']]]);
+    $tarfile = '/tmp/github.tar.gz';
+    file_put_contents($tarfile, file_get_contents($url));
+    $phar = new PharData($tarfile);
+    $html = $phar->extractTo($outPath, null, true);//路径 要解压的文件 是否覆盖
+
+    // 获取解压出的目录名
+    $outPath = findIndexPath($outPath);
+
+    // 将目录中文件打包成zip
+    //$zip=new ZipArchive();
+    $zip=new PharData($source);
+    //if($zip->open($source, ZipArchive::CREATE)){
+        addFileToZip($zip, $outPath); //调用方法，对要打包的根目录进行操作，并将ZipArchive的对象传递给方法
+    //    $zip->close(); //关闭处理的zip文件
+    //}
+
+    return updateProgram($_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], getConfig('SecretId'), getConfig('SecretKey'), $source);
+}
+
+function addFileToZip($zip, $rootpath, $path = '')
+{
+    if (substr($rootpath,-1)=='/') $rootpath = substr($rootpath, 0, -1);
+    if (substr($path,0,1)=='/') $path = substr($path, 1);
+    $handler=opendir(path_format($rootpath.'/'.$path)); //打开当前文件夹由$path指定。
+    while($filename=readdir($handler)){
+        if($filename != "." && $filename != ".."){//文件夹文件名字为'.'和‘..’，不要对他们进行操作
+            $nowname = path_format($rootpath.'/'.$path."/".$filename);
+            if(is_dir($nowname)){// 如果读取的某个对象是文件夹，则递归
+                $zip->addEmptyDir($path."/".$filename);
+                addFileToZip($zip, $rootpath, $path."/".$filename);
+            }else{ //将文件加入zip对象
+                $newname = $path."/".$filename;
+                if (substr($newname,0,1)=='/') $newname = substr($newname, 1);
+                $zip->addFile($nowname, $newname);
+                //$zip->renameName($nowname, $newname);
+            }
+        }
+    }
+    @closedir($handler);
+}
+
+function changeAuthKey() {
+    if ($_POST['SecretId']!=''&&$_POST['SecretId']!='') {
+        $tmp['SecretId'] = $_POST['SecretId'];
+        $tmp['SecretKey'] = $_POST['SecretKey'];
+        $response = setConfigResponse( SetbaseConfig($tmp, $_SERVER['function_name'], $_SERVER['Region'], $_SERVER['namespace'], $tmp['SecretId'], $tmp['SecretKey']) );
+        if (api_error($response)) {
+            $html = api_error_msg($response);
+            $title = 'Error';
+            return message($html, $title, 400);
+        } else {
+            $html = getconstStr('Success') . '
+    <script>
+        var status = "' . $response['DplStatus'] . '";
+        var i = 0;
+        var uploadList = setInterval(function(){
+            if (document.getElementById("dis").style.display=="none") {
+                console.log(i++);
+            } else {
+                clearInterval(uploadList);
+                location.href = "' . path_format($_SERVER['base_path'] . '/') . '";
+            }
+        }, 1000);
+    </script>';
+            return message($html, $title, 201, 1);
+        }
+    }
+    $html = '
+    <form action="" method="post" onsubmit="return notnull(this);">
+        <a href="https://console.cloud.tencent.com/cam/capi" target="_blank">' . getconstStr('Create') . ' SecretId & SecretKey</a><br>
+        <label>SecretId:<input name="SecretId" type="text" placeholder="" size=""></label><br>
+        <label>SecretKey:<input name="SecretKey" type="password" placeholder="" size=""></label><br>
+        <input type="submit" value="' . getconstStr('Submit') . '">
+    </form>
+    <script>
+        function notnull(t)
+        {
+            if (t.SecretId.value==\'\') {
+                alert(\'input SecretId\');
+                return false;
+            }
+            if (t.SecretKey.value==\'\') {
+                alert(\'input SecretKey\');
+                return false;
+            }
+            return true;
+        }
+    </script>';
+    return message($html, 'Change platform Auth token or key', 200);
+}
+
+function smallfileupload($drive, $path) {
+    return output('Can not upload through SCF.', 400);
 }

